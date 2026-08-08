@@ -1,0 +1,28 @@
+import { randomUUID } from 'node:crypto';
+import { Redis } from 'ioredis';
+import { createDb, connectQueue, ensureStream } from '@swarmforge/agent-framework';
+import { ArchitectAgent } from './architect-agent.js';
+
+async function main(): Promise<void> {
+  const databaseUrl = requireEnv('DATABASE_URL');
+  const natsUrl = requireEnv('NATS_URL');
+  const valkeyUrl = requireEnv('VALKEY_URL');
+
+  const db = await createDb(databaseUrl);
+  const nc = await connectQueue(natsUrl);
+  await ensureStream(nc);
+  const redis = new Redis(valkeyUrl);
+
+  const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID() });
+  await agent.start();
+
+  process.on('SIGTERM', () => void agent.stop());
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+void main();

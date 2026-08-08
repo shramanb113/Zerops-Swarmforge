@@ -40,6 +40,18 @@ importers:
         specifier: ^8.11.10
         version: 8.20.4
 
+  services/agent-architect:
+    dependencies:
+      '@swarmforge/agent-framework':
+        specifier: workspace:*
+        version: link:../../packages/agent-framework
+      drizzle-orm:
+        specifier: ^0.36.4
+        version: 0.36.4(@types/pg@8.20.4)(pg@8.22.0)
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
+
   services/control-plane:
     dependencies:
       '@swarmforge/agent-framework':
