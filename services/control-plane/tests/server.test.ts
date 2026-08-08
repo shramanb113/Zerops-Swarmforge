@@ -54,6 +54,20 @@ describe('control-plane server', () => {
     expect(worldBody.tasks.some((t) => t.id === body.id)).toBe(true);
   });
 
+  it('POST /tasks with an invalid body returns 400 with sanitized issues, not a raw 500', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tasks',
+      payload: { type: '', role: '' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json() as { error: string; issues: unknown };
+    expect(body.error).toBe('Invalid request');
+    expect(body.issues).toBeDefined();
+    expect(response.payload).not.toContain('Internal Server Error');
+  });
+
   it('GET /presence returns current presence entries', async () => {
     await redis.set(
       'presence:test-role:instance-x',
