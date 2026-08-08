@@ -26,11 +26,14 @@ describe('createDb', () => {
     expect(db).toBeDefined();
   });
 
-  it('throws once retries are exhausted', async () => {
+  it('throws once retries are exhausted, having retried the default number of times', async () => {
+    let attempts = 0;
     connect.mockImplementation(async () => {
+      attempts++;
       throw new Error('connection refused');
     });
 
     await expect(createDb('postgres://test')).rejects.toThrow('connection refused');
+    expect(attempts).toBe(6); // default retries: 5 -> 1 initial attempt + 5 retries
   });
 });
