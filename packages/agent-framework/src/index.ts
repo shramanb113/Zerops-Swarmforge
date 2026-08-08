@@ -10,6 +10,5 @@ export {
   type TaskHandler,
   type ConsumeOptions,
 } from './queue.js';
-export type { LLMClient } from './llm/client.js';
-export { GroqClient } from './llm/groq.js';
 export { ZeropsAgent, type ZeropsAgentDeps } from './agent.js';
+export { createAgent, slugify, resolveScopedPath, type CreateAgentOptions } from './mastra.js';
