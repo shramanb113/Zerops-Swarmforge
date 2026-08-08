@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   test: {
@@ -8,7 +9,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@swarmforge/agent-framework': new URL('./packages/agent-framework/src/index.ts', import.meta.url).pathname,
+      '@swarmforge/agent-framework': fileURLToPath(new URL('./packages/agent-framework/src/index.ts', import.meta.url)),
     },
   },
 });
