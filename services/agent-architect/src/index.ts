@@ -12,6 +12,9 @@ async function main(): Promise<void> {
   const nc = await connectQueue(natsUrl);
   await ensureStream(nc);
   const redis = new Redis(valkeyUrl);
+  // ioredis emits 'error' on connection failures. An EventEmitter with no 'error' listener
+  // throws, so without this a Valkey blip would crash the process.
+  redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
   const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID() });
   await agent.start();

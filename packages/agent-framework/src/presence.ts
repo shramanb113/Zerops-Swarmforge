@@ -30,8 +30,20 @@ export class PresenceHeartbeat {
 
   start(): void {
     if (this.timer) clearInterval(this.timer);
-    void this.beat();
-    this.timer = setInterval(() => void this.beat(), HEARTBEAT_INTERVAL_MS);
+    // `beat()` writes to Valkey. If Valkey is unreachable, ioredis queues the command and
+    // eventually rejects it (after `maxRetriesPerRequest`, default 20). A discarded promise
+    // (`void this.beat()`) turns that into an unhandled rejection, which Node treats as fatal —
+    // a transient Valkey blip would take the whole agent down. Attach a catch to both the
+    // immediate beat and every interval beat so a failed heartbeat is logged and nothing more:
+    // the presence key simply expires (TTL 10s) until Valkey comes back and a later beat lands.
+    this.beat().catch((err) => this.logBeatError(err));
+    this.timer = setInterval(() => {
+      this.beat().catch((err) => this.logBeatError(err));
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private logBeatError(err: unknown): void {
+    console.error(`[presence] heartbeat failed for role "${this.role}" instance "${this.instanceId}":`, err);
   }
 
   stop(): void {
