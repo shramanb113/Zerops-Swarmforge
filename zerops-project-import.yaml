@@ -1,0 +1,23 @@
+project:
+  name: swarmforge
+  description: 'SwarmForge Foundation: control plane + first agent on real Zerops infra'
+
+services:
+  - hostname: postgres
+    type: postgresql@16
+    mode: NON_HA
+
+  - hostname: valkey
+    type: valkey@7.2
+    mode: NON_HA
+
+  - hostname: nats
+    type: nats@2.12
+    mode: NON_HA
+
+  - hostname: control-plane
+    type: nodejs@22
+    enableSubdomainAccess: true
+
+  - hostname: agent-architect
+    type: nodejs@22
