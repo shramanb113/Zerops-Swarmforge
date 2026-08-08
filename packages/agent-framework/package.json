@@ -16,6 +16,9 @@
     "groq-sdk": "^0.9.1"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10"
+    "@types/pg": "^8.11.10",
+    "@mastra/core": "^0.10.0",
+    "ai": "^4.3.16",
+    "zod": "^3.24.0"
   }
 }
