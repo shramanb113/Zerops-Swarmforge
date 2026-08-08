@@ -54,6 +54,9 @@ importers:
       ioredis:
         specifier: ^5.4.1
         version: 5.11.1
+      nats:
+        specifier: ^2.29.2
+        version: 2.29.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76
