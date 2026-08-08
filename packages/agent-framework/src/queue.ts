@@ -76,28 +76,59 @@ export async function consumeTasks(
       activeMessages = messages;
       try {
         for await (const m of messages) {
-          const parsed = JSON.parse(m.string()) as TaskMessage;
+          // JSON.parse must stay inside a try: a single malformed payload used to throw
+          // straight out of this for-await, unwinding run() and permanently killing this
+          // role's consumer — while PresenceHeartbeat kept beating, so /presence reported the
+          // role healthy while its tasks sat `in_progress` forever. A poison message is
+          // unfixable by redelivery, so term() it and keep serving the rest of the stream.
+          let parsed: TaskMessage;
+          try {
+            parsed = JSON.parse(m.string()) as TaskMessage;
+          } catch (parseErr) {
+            console.error(
+              `[queue] consumeTasks: malformed payload for role "${opts.role}" (deliveryCount ${m.info.deliveryCount}), terminating message:`,
+              parseErr,
+            );
+            m.term();
+            if (stopped) break;
+            continue;
+          }
           try {
             await handler(parsed);
             m.ack();
           } catch (err) {
             if (m.info.deliveryCount >= opts.maxDeliver) {
-              await opts.onFinalFailure(parsed, err);
+              // onFinalFailure writes to Postgres (see ZeropsAgent.recordFailure). If that
+              // write fails, the throw would escape the for-await and kill the consumer for
+              // good — the same failure mode as an unguarded parse. Log and still term(), so
+              // one unrecordable failure never takes the whole role offline.
+              try {
+                await opts.onFinalFailure(parsed, err);
+              } catch (finalErr) {
+                console.error(
+                  `[queue] onFinalFailure threw for role "${opts.role}", taskId "${parsed.taskId}":`,
+                  finalErr,
+                );
+              }
               m.term();
             } else {
-              m.nak();
+              // nak() with no argument redelivers immediately, which burns every maxDeliver
+              // attempt in milliseconds — a task is marked permanently `failed` before a
+              // transient dependency (Postgres/Valkey blip) had any chance to recover.
+              // Back off exponentially from the delivery count: 1s, 2s, 4s, ... capped at 30s.
+              const backoffMs = Math.min(1000 * 2 ** (m.info.deliveryCount - 1), 30_000);
+              m.nak(backoffMs);
             }
           }
           if (stopped) break;
         }
       } finally {
-        // JSON.parse (above) is not inside the handler's try/catch, so a malformed payload
-        // throws straight out of this for-await loop, skipping the `activeMessages = undefined`
-        // that used to sit after it unguarded. Left stale, a later stop() would call
-        // `.close()` on an iterator that already died when the exception unwound it — and that
-        // call never resolves. Clearing it here, in `finally`, runs on every exit path (normal
-        // completion, `break`, or a thrown parse error), so stop() always sees `undefined` once
-        // this iterator is no longer live and skips the hang.
+        // Every per-message failure is now handled inside the loop, but genuine
+        // iterator/connection-level failures still throw out of this for-await. Left stale,
+        // a later stop() would call `.close()` on an iterator that already died when the
+        // exception unwound it — and that call never resolves. Clearing it here, in `finally`,
+        // runs on every exit path (normal completion, `break`, or a thrown iterator error), so
+        // stop() always sees `undefined` once this iterator is no longer live and skips the hang.
         activeMessages = undefined;
       }
       if (stopped) break;
@@ -109,8 +140,9 @@ export async function consumeTasks(
   // completes its `for await` normally with no thrown error (verified empirically against the
   // installed nats@2.29.3: closing an idle/active consume() iterator resolves the async
   // generator's `finally` without an error, whereas a genuine failure — e.g. a deleted/missing
-  // consumer, or a JSON.parse failure on a malformed payload — throws a real Error out of the
-  // `for await`). So there is no "expected" error shape to swallow here: anything that reaches
+  // consumer — throws a real Error out of the `for await`; per-message failures, including
+  // malformed payloads, are now all handled inside the loop and never reach here). So there is
+  // no "expected" error shape to swallow here: anything that reaches
   // this catch is an unexpected failure, and silently dropping it would kill this role's
   // consumer with no observable signal. Log it instead.
   const done = run().catch((err) => {
