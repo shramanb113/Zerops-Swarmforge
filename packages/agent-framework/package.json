@@ -1,0 +1,21 @@
+{
+  "name": "@swarmforge/agent-framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4",
+    "pg": "^8.13.1",
+    "ioredis": "^5.4.1",
+    "nats": "^2.29.2",
+    "groq-sdk": "^0.9.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}
