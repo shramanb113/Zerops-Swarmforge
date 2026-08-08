@@ -12,3 +12,4 @@ export {
 } from './queue.js';
 export type { LLMClient } from './llm/client.js';
 export { GroqClient } from './llm/groq.js';
+export { ZeropsAgent, type ZeropsAgentDeps } from './agent.js';
