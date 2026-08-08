@@ -68,6 +68,41 @@ describe('control-plane server', () => {
     expect(response.payload).not.toContain('Internal Server Error');
   });
 
+  it('POST /tasks with no payload field defaults it to {} rather than crashing on the NOT NULL column', async () => {
+    // `payload: z.unknown()` made the key optional, so omitting it inserted SQL NULL into a
+    // NOT NULL jsonb column — a raw Postgres 23502 leaked to the client as a 500.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tasks',
+      payload: { type: 'test', role: 'test-no-payload' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = response.json() as { id: string; status: string };
+    expect(body.status).toBe('pending');
+
+    const worldState = await app.inject({ method: 'GET', url: '/world-state' });
+    const worldBody = worldState.json() as { tasks: Array<{ id: string; payload: unknown }> };
+    const created = worldBody.tasks.find((t) => t.id === body.id);
+    expect(created?.payload).toEqual({});
+  });
+
+  it('POST /tasks rejects a role containing a dot, which would build an unroutable NATS subject', async () => {
+    // publishTask interpolates role into `tasks.${role}`, and the TASKS stream only captures
+    // the single-token `tasks.*`. A dotted role publishes to a subject nothing consumes, while
+    // the task row has already been inserted — orphaning it as `pending` forever.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tasks',
+      payload: { type: 'test', role: 'a.b', payload: {} },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json() as { error: string; issues: unknown };
+    expect(body.error).toBe('Invalid request');
+    expect(response.payload).not.toContain('Internal Server Error');
+  });
+
   it('GET /presence returns current presence entries', async () => {
     await redis.set(
       'presence:test-role:instance-x',
