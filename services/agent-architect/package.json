@@ -10,6 +10,7 @@
   "dependencies": {
     "@swarmforge/agent-framework": "workspace:*",
     "drizzle-orm": "^0.36.4",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "nats": "^2.29.2"
   }
 }
