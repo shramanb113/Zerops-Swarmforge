@@ -29,6 +29,7 @@ export class PresenceHeartbeat {
   }
 
   start(): void {
+    if (this.timer) clearInterval(this.timer);
     void this.beat();
     this.timer = setInterval(() => void this.beat(), HEARTBEAT_INTERVAL_MS);
   }
