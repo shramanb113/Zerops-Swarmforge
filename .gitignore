@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 *.log
+# `pnpm deploy` output (see zerops.yaml) — build artifact, regenerated on every Zerops build
+out/

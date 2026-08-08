@@ -1,3 +1,24 @@
+# Packaging note (both services):
+#
+# `pnpm deploy` builds a self-contained directory per service: the service's own files plus a
+# fully materialised `node_modules`. Two things make it necessary here:
+#
+#  1. pnpm's default node-linker is symlink-based — each service's real dependencies
+#     (fastify, drizzle-orm, ioredis, nats, zod, pg, @swarmforge/agent-framework) are symlinks
+#     in `services/<name>/node_modules/` pointing into the root `node_modules/.pnpm/` store, and
+#     the root `node_modules/` holds only hoisted devDeps. Neither listing the root store nor
+#     listing the per-service directory is safe, because Zerops' file-copy step is not
+#     guaranteed to preserve symlinks. `--config.node-linker=hoisted` makes `pnpm deploy` emit
+#     real directories instead: verified locally at 0 symlinks in the whole output tree.
+#  2. `deployFiles` treats a trailing `~` as a multi-directory wildcard ("one or more folders in
+#     the path"), so the old `dist/~` matched `dist/`'s subdirectories but NOT `dist/index.js` —
+#     the very file `start:` runs. Plain directory paths (no wildcard) are used below; Zerops
+#     preserves their relative path under /var/www, so `out/control-plane` lands at
+#     `/var/www/out/control-plane` and `start:` addresses it by that same path.
+#
+# @swarmforge/agent-framework must be built before `pnpm deploy` runs — pnpm injects the
+# workspace package by copying its current on-disk contents, `dist/` included.
+
 zerops:
   - setup: control-plane
     build:
@@ -7,16 +28,12 @@ zerops:
         - pnpm install --frozen-lockfile
         - pnpm --filter @swarmforge/agent-framework build
         - pnpm --filter control-plane build
+        - pnpm --filter control-plane deploy --prod --config.node-linker=hoisted out/control-plane
       deployFiles:
-        - packages/agent-framework/dist/~
-        - packages/agent-framework/package.json
-        - services/control-plane/dist/~
-        - services/control-plane/package.json
-        - services/control-plane/drizzle/~
-        - node_modules/~
+        - out/control-plane
     run:
       base: nodejs@22
-      start: node services/control-plane/dist/index.js
+      start: node out/control-plane/dist/index.js
       ports:
         - port: 3000
           httpSupport: true
@@ -33,15 +50,12 @@ zerops:
         - pnpm install --frozen-lockfile
         - pnpm --filter @swarmforge/agent-framework build
         - pnpm --filter agent-architect build
+        - pnpm --filter agent-architect deploy --prod --config.node-linker=hoisted out/agent-architect
       deployFiles:
-        - packages/agent-framework/dist/~
-        - packages/agent-framework/package.json
-        - services/agent-architect/dist/~
-        - services/agent-architect/package.json
-        - node_modules/~
+        - out/agent-architect
     run:
       base: nodejs@22
-      start: node services/agent-architect/dist/index.js
+      start: node out/agent-architect/dist/index.js
       envVariables:
         DATABASE_URL: '${postgres_connectionString}'
         NATS_URL: '${nats_connectionString}'
