@@ -17,10 +17,18 @@ async function main(): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const stateResponse = await fetch(`${CONTROL_PLANE_URL}/world-state`);
-    const state = (await stateResponse.json()) as { tasks: Array<{ id: string; status: string }> };
+    const state = (await stateResponse.json()) as {
+      tasks: Array<{ id: string; status: string }>;
+      events: Array<{ taskId: string; eventType: string }>;
+    };
     const task = state.tasks.find((t) => t.id === id);
     if (task?.status === 'done') {
       console.log('task completed successfully');
+      const completedEvent = state.events.some((e) => e.taskId === id && e.eventType === 'task_completed');
+      if (!completedEvent) {
+        throw new Error('expected a task_completed event for the created task');
+      }
+      console.log('task_events check passed: task_completed event recorded');
       const presenceResponse = await fetch(`${CONTROL_PLANE_URL}/presence`);
       const presence = (await presenceResponse.json()) as { agents: Array<{ role: string }> };
       if (!presence.agents.some((a) => a.role === 'architect')) {
