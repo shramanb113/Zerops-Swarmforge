@@ -1,8 +1,16 @@
-import { connect, AckPolicy, DeliverPolicy, type NatsConnection } from 'nats';
+import { connect, AckPolicy, DeliverPolicy, nanos, type NatsConnection } from 'nats';
 import { withRetry } from './retry.js';
 
 const STREAM_NAME = 'TASKS';
 const SUBJECT_PREFIX = 'tasks';
+
+// JetStream's own default ack_wait is 30s. That's fine for the stub `onTask` handlers Foundation
+// shipped with, but Coder/Deployer now do real work in-handler (Groq calls, `pnpm install`/`tsc`
+// compile checks) that can legitimately run past 30s. Without a longer ack_wait, JetStream treats
+// an un-acked-in-time message as lost and redelivers it to the *same* still-running handler,
+// producing concurrent duplicate work instead of a clean retry (see
+// swarmforge-foundation-carryforward memory item 2, flagged during Foundation for exactly this).
+const DEFAULT_ACK_WAIT_MS = 120_000;
 
 export interface TaskMessage {
   taskId: string;
@@ -34,6 +42,8 @@ export interface ConsumeOptions {
   role: string;
   maxDeliver: number;
   onFinalFailure: (msg: TaskMessage, err: unknown) => Promise<void>;
+  /** Defaults to DEFAULT_ACK_WAIT_MS (120s) — see the constant's comment for why. */
+  ackWaitMs?: number;
 }
 
 export async function consumeTasks(
@@ -43,8 +53,19 @@ export async function consumeTasks(
 ): Promise<() => Promise<void>> {
   const jsm = await nc.jetstreamManager();
   const durableName = `${opts.role}-consumer`;
+  const ackWait = nanos(opts.ackWaitMs ?? DEFAULT_ACK_WAIT_MS);
   try {
-    await jsm.consumers.info(STREAM_NAME, durableName);
+    const existing = await jsm.consumers.info(STREAM_NAME, durableName);
+    // A durable consumer created by an older run (e.g. before this ack_wait/max_deliver was
+    // introduced, or by a prior local `vitest` process — JetStream durables outlive the process
+    // that created them) can be left with a stale config. Reconcile it on every start instead of
+    // trusting whatever the first-ever `consumers.add` call for this role happened to set.
+    if (existing.config.ack_wait !== ackWait || existing.config.max_deliver !== opts.maxDeliver) {
+      await jsm.consumers.update(STREAM_NAME, durableName, {
+        ack_wait: ackWait,
+        max_deliver: opts.maxDeliver,
+      });
+    }
   } catch {
     await jsm.consumers.add(STREAM_NAME, {
       durable_name: durableName,
@@ -52,6 +73,7 @@ export async function consumeTasks(
       ack_policy: AckPolicy.Explicit,
       max_deliver: opts.maxDeliver,
       deliver_policy: DeliverPolicy.All,
+      ack_wait: ackWait,
     });
   }
 
