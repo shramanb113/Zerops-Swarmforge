@@ -48,6 +48,11 @@ export function createMockModel(response: MockModelResponse): MockLanguageModelV
   const finalText = response.object !== undefined ? JSON.stringify(response.object) : (response.text ?? 'done');
   let callCount = 0;
   return new MockLanguageModelV1({
+    // Only set for structured-output responses: `agent.generate(prompt, { output: schema })`
+    // calls the AI SDK's `generateObject()`, which throws "Model does not have a default
+    // object generation mode" unless the model declares one. 'json' matches how this mock
+    // returns its structured payload — as a JSON-stringified `text`, not a tool call.
+    defaultObjectGenerationMode: response.object !== undefined ? 'json' : undefined,
     doGenerate: async () => {
       callCount += 1;
       if (response.toolCalls && response.toolCalls.length > 0 && callCount === 1) {

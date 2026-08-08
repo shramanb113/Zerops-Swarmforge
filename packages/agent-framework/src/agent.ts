@@ -24,6 +24,7 @@ export abstract class ZeropsAgent {
   private readonly maxDeliver: number;
   private readonly presence: PresenceHeartbeat;
   private stopConsuming: (() => Promise<void>) | undefined;
+  protected currentTaskId: string | undefined;
 
   constructor(deps: ZeropsAgentDeps) {
     this.db = deps.db;
@@ -60,6 +61,7 @@ export abstract class ZeropsAgent {
     await this.db.update(tasks).set({ status: 'in_progress', updatedAt: new Date() }).where(eq(tasks.id, msg.taskId));
     await this.logEvent(msg.taskId, 'task_started', {});
 
+    this.currentTaskId = msg.taskId;
     await this.onTask(msg.payload);
 
     await this.db.update(tasks).set({ status: 'done', updatedAt: new Date() }).where(eq(tasks.id, msg.taskId));

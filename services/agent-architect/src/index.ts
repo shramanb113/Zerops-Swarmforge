@@ -7,6 +7,7 @@ async function main(): Promise<void> {
   const databaseUrl = requireEnv('DATABASE_URL');
   const natsUrl = requireEnv('NATS_URL');
   const valkeyUrl = requireEnv('VALKEY_URL');
+  requireEnv('GROQ_API_KEY'); // read by Mastra's model router directly from process.env
 
   const db = await createDb(databaseUrl);
   const nc = await connectQueue(natsUrl);
@@ -16,8 +17,9 @@ async function main(): Promise<void> {
   // throws, so without this a Valkey blip would crash the process.
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID() });
+  const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID(), databaseUrl });
   await agent.start();
+  console.log('[agent-architect] started, instance', agent);
 
   process.on('SIGTERM', () => void agent.stop());
 }
