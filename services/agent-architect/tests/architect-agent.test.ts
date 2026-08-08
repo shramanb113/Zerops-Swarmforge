@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
 import Redis from 'ioredis';
 import {
-  createDb, connectQueue, ensureStream, publishTask, tasks, taskEvents, products, architectureProposals, type Db,
+  createDb, connectQueue, ensureStream, publishTask, tasks, taskEvents, products, architectureProposals, eq, type Db,
 } from '@swarmforge/agent-framework';
 import type { NatsConnection } from 'nats';
 import { ArchitectAgent } from '../src/architect-agent.js';
@@ -83,5 +82,38 @@ describe('ArchitectAgent', () => {
         body: expect.stringContaining('"role":"coder"'),
       }),
     );
+  });
+
+  it('is idempotent under redelivery: the same taskId never produces a second product/proposal pair', async () => {
+    const taskId = randomUUID();
+    await db.insert(tasks).values({
+      id: taskId, type: 'build-product', role: 'architect', payload: { description: 'a todo app' }, status: 'pending',
+    });
+
+    // Publish the same taskId twice, simulating NATS redelivering the same task after a
+    // transient failure — the second onTask run should reuse the first run's rows rather
+    // than generating and inserting a duplicate product/proposal pair.
+    await publishTask(nc, 'architect', { taskId, role: 'architect', payload: { description: 'a todo app' } });
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('done');
+    }, { timeout: 5000 });
+
+    const [firstProposal] = await db.select().from(architectureProposals).where(eq(architectureProposals.taskId, taskId));
+    expect(firstProposal).toBeDefined();
+
+    await db.update(tasks).set({ status: 'pending' }).where(eq(tasks.id, taskId));
+    await publishTask(nc, 'architect', { taskId, role: 'architect', payload: { description: 'a todo app' } });
+    await vi.waitFor(async () => {
+      const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+      expect(events.filter((e) => e.eventType === 'task_completed').length).toBe(2);
+    }, { timeout: 5000 });
+
+    const proposalRows = await db.select().from(architectureProposals).where(eq(architectureProposals.taskId, taskId));
+    expect(proposalRows).toHaveLength(1);
+    expect(proposalRows[0]?.id).toBe(firstProposal!.id);
+
+    const productRows = await db.select().from(products).where(eq(products.id, firstProposal!.productId));
+    expect(productRows).toHaveLength(1);
   });
 });

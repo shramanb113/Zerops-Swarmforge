@@ -17,9 +17,13 @@ async function main(): Promise<void> {
   // throws, so without this a Valkey blip would crash the process.
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID(), databaseUrl });
+  const instanceId = randomUUID();
+  const agent = new ArchitectAgent({ db, redis, nc, instanceId, databaseUrl });
   await agent.start();
-  console.log('[agent-architect] started, instance', agent);
+  // Log only the instance id, never the agent object itself — it carries `databaseUrl`
+  // (with the Postgres password) as an ordinary enumerable property at runtime, since
+  // TypeScript's `private`/`protected` modifiers are compile-time only.
+  console.log('[agent-architect] started, instance', instanceId);
 
   process.on('SIGTERM', () => void agent.stop());
 }
