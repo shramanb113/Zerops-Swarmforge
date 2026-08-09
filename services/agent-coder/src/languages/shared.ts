@@ -2,6 +2,7 @@ export type CoderLanguageProfile = {
   scaffold(productDir: string, name: string): Promise<void>;
   instructions(hostname: string): string;
   compileCheck(productDir: string): Promise<{ ok: boolean; output: string }>;
+  entrypointFilename: string;
 };
 
 export const FRONTEND_INSTRUCTIONS =

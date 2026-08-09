@@ -84,6 +84,8 @@ function bootSmokeTest(productDir: string): Promise<{ ok: boolean; output: strin
 }
 
 export const pythonProfile: CoderLanguageProfile = {
+  entrypointFilename: 'main.py',
+
   async scaffold(productDir) {
     await mkdir(productDir, { recursive: true });
     await writeFile(path.join(productDir, 'requirements.txt'), REQUIREMENTS_TXT, 'utf-8');

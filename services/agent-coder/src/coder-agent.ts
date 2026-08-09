@@ -115,7 +115,7 @@ export class CoderAgent extends ZeropsAgent {
       `Architecture proposal for "${proposal.serviceName}": ${proposal.summary}\n` +
         `Endpoints: ${JSON.stringify(proposal.endpoints)}\n` +
         `Data model: ${JSON.stringify(proposal.dataModel)}\n` +
-        'Implement this now: call write_file for "index.ts" (the backend) and again for ' +
+        `Implement this now: call write_file for "${profile.entrypointFilename}" (the backend) and again for ` +
         '"frontend.html" (the UI) - both are required.',
     );
 

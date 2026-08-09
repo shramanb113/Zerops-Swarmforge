@@ -40,6 +40,8 @@ const TSCONFIG_JSON = JSON.stringify(
 );
 
 export const typescriptProfile: CoderLanguageProfile = {
+  entrypointFilename: 'index.ts',
+
   async scaffold(productDir, name) {
     await mkdir(path.join(productDir, 'src'), { recursive: true });
     await writeFile(path.join(productDir, 'package.json'), PACKAGE_JSON(name), 'utf-8');
