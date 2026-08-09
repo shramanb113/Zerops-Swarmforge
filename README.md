@@ -126,11 +126,6 @@ safe to expect** from a real run today.
 This was built in a 48-hour window, so scope was cut deliberately rather than left
 unfinished-and-hidden. Worth knowing before you judge or extend it:
 
-- **Only 3 of the originally-designed 6 agents were built**: Architect, Coder,
-  Deployer. Tester, Observer, and Healer exist only as design docs
-  (`docs/superpowers/specs/2026-08-09-swarmforge-healer-design.md`) — there is no
-  self-healing loop and no continuous self-testing in this build, only the one-shot
-  build → deploy pipeline.
 - **Go and Rust are unimplemented** (see above) despite being in the Architect's
   language choices.
 - **Generated backends are intentionally single-file.** The Coder is instructed to
