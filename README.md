@@ -88,6 +88,62 @@ architecture *is* a fleet of cooperating Zerops services.
    Valkey heartbeat — the dashboard streams both so the whole build is watchable in
    real time, not a black box.
 
+## Try it with a known-working example
+
+The Architect will *attempt* almost any one-sentence description, but for a demo or
+review, use one of these — each has been run through the full
+Architect → Coder → Deployer pipeline and confirmed to produce compiling, self-checked,
+deployable code:
+
+- `A URL shortener API with click count tracking`
+- `A simple task manager API with priorities`
+- `A weather lookup API by city name`
+- `make a url shortener python backend`
+- `make a todo api in python with frontend`
+- `A simple REST API in Python that manages a list of book titles - add a book, list all books.`
+
+Mention "python" explicitly to steer the Architect toward the Python/FastAPI profile;
+otherwise it defaults to TypeScript/Fastify for most everyday CRUD-shaped descriptions
+(see **Supported languages** below for why that matters). Free-form descriptions
+outside this list often work too, but haven't been verified end-to-end — an
+under-specified or unusual description can still produce a proposal the Coder can't
+satisfy, which the pipeline reports as a failed task rather than silently guessing.
+
+## Supported languages
+
+The Architect is prompted to choose from four languages (TypeScript, Python, Go,
+Rust), but the Coder only has a **real implementation for two: TypeScript/Fastify and
+Python/FastAPI.** If the Architect ever proposes Go or Rust, the Coder and Deployer
+both silently fall back to the TypeScript profile — the product gets built and
+deployed as TypeScript regardless of its `language` label in the database. This is a
+known, unresolved gap: Go/Rust were left in the Architect's language enum from the
+original design but their Coder profiles were never built (see the multilingual-coder
+spec/plan under `docs/superpowers/`). Effectively, **only TypeScript and Python are
+safe to expect** from a real run today.
+
+## Hackathon constraints
+
+This was built in a 48-hour window, so scope was cut deliberately rather than left
+unfinished-and-hidden. Worth knowing before you judge or extend it:
+
+- **Only 3 of the originally-designed 6 agents were built**: Architect, Coder,
+  Deployer. Tester, Observer, and Healer exist only as design docs
+  (`docs/superpowers/specs/2026-08-09-swarmforge-healer-design.md`) — there is no
+  self-healing loop and no continuous self-testing in this build, only the one-shot
+  build → deploy pipeline.
+- **Go and Rust are unimplemented** (see above) despite being in the Architect's
+  language choices.
+- **Generated backends are intentionally single-file.** The Coder is instructed to
+  produce one `index.ts`/`main.py` per product rather than a multi-file project — fine
+  for the small CRUD-shaped services this targets, not representative of how you'd
+  structure a larger service.
+- **No auth, rate-limiting, or multi-tenancy** on the control-plane API or on
+  generated products — anyone who can reach `POST /tasks` can queue a build, and
+  every generated backend is unauthenticated by default.
+- **`DEPLOY_DRY_RUN` defaults to `true`.** A fresh clone logs the `zcli` commands it
+  would run rather than actually deploying, so cloning the repo can never surprise
+  someone with a real Zerops bill. Real deploys are an explicit opt-in (see below).
+
 ## Tech stack
 
 | Layer | Choice | Why |
