@@ -82,7 +82,7 @@ function expandRounds(rounds: MockModelRound[]): Step[] {
 }
 
 export function createMockModel(response: MockModelResponse): MockLanguageModelV1 {
-  const steps = response.rounds
+  const steps = response.rounds && response.rounds.length > 0
     ? expandRounds(response.rounds)
     : expandRounds([{
         toolCalls: response.toolCalls,

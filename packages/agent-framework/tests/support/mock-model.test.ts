@@ -80,4 +80,12 @@ describe('createMockModel', () => {
 
     expect([r1.text, r2.text, r3.text]).toEqual(['round one', 'round two', 'round two']);
   });
+
+  it('gracefully handles an empty rounds array by falling back to default text response', async () => {
+    const model = createMockModel({ rounds: [] });
+    const agent = new Agent({ name: 'empty-rounds-test', instructions: 'test', model });
+
+    const response = await agent.generate('anything');
+    expect(response.text).toBe('done');
+  });
 });
