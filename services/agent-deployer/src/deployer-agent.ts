@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { ZeropsAgent, type ZeropsAgentDeps, createAgent, slugify, products, taskEvents, and, eq } from '@swarmforge/agent-framework';
+import { ZeropsAgent, type ZeropsAgentDeps, createAgent, slugify, products, taskEvents, and, eq, type Language } from '@swarmforge/agent-framework';
 import { renderZeropsYaml, renderServiceImportYaml } from './deploy-template.js';
 import { validateDeploySequence } from './deploy-sequence-check.js';
 
@@ -92,8 +92,9 @@ export class DeployerAgent extends ZeropsAgent {
         // two writeFile calls below, run_zcli's (faster, synchronous) push would consistently
         // land first regardless of call order, corrupting the very sequence being validated.
         commands.push('write_deploy_config');
-        await writeFile(path.join(productDir, 'zerops.yaml'), renderZeropsYaml(hostname), 'utf-8');
-        await writeFile(path.join(productDir, 'zerops-service-import.yaml'), renderServiceImportYaml(hostname), 'utf-8');
+        const language = (product.language as Language) ?? 'typescript';
+        await writeFile(path.join(productDir, 'zerops.yaml'), renderZeropsYaml(hostname, language), 'utf-8');
+        await writeFile(path.join(productDir, 'zerops-service-import.yaml'), renderServiceImportYaml(hostname, language), 'utf-8');
         return { written: true };
       },
     };
