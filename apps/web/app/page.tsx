@@ -273,15 +273,12 @@ export default function Page() {
         <section className="panel">
           <h2>Agents online</h2>
           <div className="presence-row">
-            {ROLES.map((role) => {
-              const online = presence.some((a) => a.role === role);
-              return (
-                <span className="presence-chip" key={role}>
-                  <span className={`dot${online ? ' on' : ''}`} />
-                  {role}
-                </span>
-              );
-            })}
+            {ROLES.filter((role) => presence.some((a) => a.role === role)).map((role) => (
+              <span className="presence-chip" key={role}>
+                <span className="dot on" />
+                {role}
+              </span>
+            ))}
           </div>
         </section>
 
