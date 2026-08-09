@@ -1,4 +1,4 @@
-export { eq } from 'drizzle-orm';
+export { and, eq } from 'drizzle-orm';
 export { agents, tasks, taskEvents, products, architectureProposals } from './db/schema.js';
 export { createDb, type Db } from './db/client.js';
 export { PresenceHeartbeat, listPresence, type PresenceInfo } from './presence.js';

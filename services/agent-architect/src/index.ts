@@ -18,11 +18,12 @@ async function main(): Promise<void> {
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
   const instanceId = randomUUID();
-  const agent = new ArchitectAgent({ db, redis, nc, instanceId, databaseUrl });
+  const agent = new ArchitectAgent({ db, redis, nc, instanceId });
   await agent.start();
-  // Log only the instance id, never the agent object itself — it carries `databaseUrl`
-  // (with the Postgres password) as an ordinary enumerable property at runtime, since
-  // TypeScript's `private`/`protected` modifiers are compile-time only.
+  // Log only the instance id, never the agent object itself — it holds live `db`/`redis`
+  // clients whose config (including the Postgres password) is reachable as ordinary
+  // enumerable properties at runtime, since TypeScript's `private`/`protected` modifiers
+  // are compile-time only.
   console.log('[agent-architect] started, instance', instanceId);
 
   process.on('SIGTERM', () => void agent.stop());

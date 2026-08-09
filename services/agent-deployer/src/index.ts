@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const redis = new Redis(valkeyUrl);
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const agent = new DeployerAgent({ db, redis, nc, instanceId: randomUUID(), databaseUrl });
+  const agent = new DeployerAgent({ db, redis, nc, instanceId: randomUUID() });
   await agent.start();
   console.log(`[agent-deployer] started, DEPLOY_DRY_RUN=${process.env.DEPLOY_DRY_RUN !== 'false'}`);
 

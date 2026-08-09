@@ -37,7 +37,6 @@ describe('createAgent', () => {
       name: 'Test Agent',
       instructions: 'test',
       model: createMockModel({ text: 'ok' }),
-      databaseUrl: process.env.TEST_DATABASE_URL ?? 'postgres://swarmforge:swarmforge@localhost:5432/swarmforge',
     });
     const response = await agent.generate('hi');
     expect(response.text).toBe('ok');

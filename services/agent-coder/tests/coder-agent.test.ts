@@ -56,12 +56,15 @@ describe('CoderAgent', () => {
     });
 
     agent = new CoderAgent({
-      db, redis, nc, instanceId: 'test-coder-1', databaseUrl: DB_URL,
+      db, redis, nc, instanceId: 'test-coder-1',
       model: createMockModel({
         toolCalls: [{
           toolName: 'write_file',
           input: {
-            path: 'index.ts',
+            // Deliberately the *wrong* path the real model actually produced live: the tool
+            // contract is "relative to src/", but a model told the project lives in src/ will
+            // sometimes prefix it anyway, which used to land the file at src/src/index.ts.
+            path: 'src/index.ts',
             content:
               "import Fastify from 'fastify';\n" +
               "const app = Fastify();\n" +
@@ -111,10 +114,14 @@ describe('CoderAgent', () => {
 
     expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'package.json'))).toBe(true);
     expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'src', 'index.ts'))).toBe(true);
+    // The redundant "src/" prefix the model supplied must be stripped, not resolved a second
+    // time against srcRoot - both files existed on disk before this was fixed.
+    expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'src', 'src', 'index.ts'))).toBe(false);
 
     const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
     expect(events.some((e) => e.eventType === 'task_started')).toBe(true);
     const codeGenerated = events.find((e) => e.eventType === 'code_generated');
+    // The *resolved* path relative to src/, not the raw string the model sent.
     expect((codeGenerated?.payload as { files: string[] } | undefined)?.files).toEqual(['index.ts']);
     // Longer than the default 15s testTimeout (vitest.config.ts) and matching the vi.waitFor
     // budget above - the compile-check step does a real `pnpm install`/`tsc --noEmit` network

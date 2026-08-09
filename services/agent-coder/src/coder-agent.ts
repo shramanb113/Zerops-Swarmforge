@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
-  ZeropsAgent, type ZeropsAgentDeps, createAgent, resolveScopedPath,
-  products, architectureProposals, taskEvents, eq,
+  ZeropsAgent, type ZeropsAgentDeps, createAgent, resolveScopedPath, slugify,
+  products, architectureProposals, taskEvents, and, eq,
 } from '@swarmforge/agent-framework';
 import { scaffoldProduct } from './product-template.js';
 
@@ -20,25 +20,49 @@ const PRODUCTS_ROOT = fileURLToPath(new URL('../../../products', import.meta.url
 
 type CoderDeps = Omit<ZeropsAgentDeps, 'role'> & {
   model?: Parameters<typeof createAgent>[0]['model'];
-  databaseUrl?: string;
   controlPlaneUrl?: string;
 };
 
 export class CoderAgent extends ZeropsAgent {
   private readonly controlPlaneUrl: string;
   private readonly agentModel: Parameters<typeof createAgent>[0]['model'];
-  private readonly databaseUrl: string;
 
   constructor(deps: CoderDeps) {
     super({ ...deps, role: 'coder' });
     this.agentModel = deps.model;
-    this.databaseUrl = deps.databaseUrl ?? requireEnv('DATABASE_URL');
     this.controlPlaneUrl = deps.controlPlaneUrl ?? process.env.CONTROL_PLANE_URL ?? 'http://localhost:3000';
   }
 
   async onTask(payload: unknown): Promise<void> {
     const { productId } = TaskPayload.parse(payload);
+    const taskId = this.currentTaskId!;
 
+    // Idempotency guard, mirroring ArchitectAgent's: NATS redelivers this exact task on any
+    // thrown error (e.g. a transient control-plane blip on the handoff POST below), up to
+    // maxDeliver attempts. Without this check every redelivery re-runs the whole LLM
+    // generation and a fresh `pnpm install`/`tsc` round-trip from scratch - observed live as
+    // five duplicate runs of a single task. If a `code_generated` event already exists for
+    // this task, the code is already on disk and already compiled; only the handoff is left.
+    const [existingCodeGenerated] = await this.db
+      .select()
+      .from(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), eq(taskEvents.eventType, 'code_generated')));
+
+    if (!existingCodeGenerated) {
+      await this.generateAndCompile(productId, taskId);
+    }
+
+    const res = await fetch(`${this.controlPlaneUrl}/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'build-product', role: 'deployer', payload: { productId } }),
+    });
+    if (!res.ok) {
+      throw new Error(`failed to hand off to deployer: POST /tasks returned ${res.status}`);
+    }
+  }
+
+  private async generateAndCompile(productId: string, taskId: string): Promise<void> {
     const [product] = await this.db.select().from(products).where(eq(products.id, productId));
     if (!product) throw new Error(`product ${productId} not found`);
     const [proposal] = await this.db
@@ -48,7 +72,12 @@ export class CoderAgent extends ZeropsAgent {
     if (!proposal) throw new Error(`no architecture proposal found for product ${productId}`);
 
     const productDir = path.join(PRODUCTS_ROOT, productId);
-    await scaffoldProduct(productDir, product.name);
+    // Re-slugify at the point of use rather than trusting that whoever wrote this row already
+    // did. `name` ends up as the generated package.json's `name` field; the global constraint
+    // is that any name reaching a filesystem path, shell argument or Zerops hostname is
+    // slugify() output, and that must hold as an invariant, not as a convention that happens
+    // to be true because ArchitectAgent is currently the only writer. slugify is idempotent.
+    await scaffoldProduct(productDir, slugify(product.name));
 
     const writtenFiles: string[] = [];
     const writeFileTool = this.buildWriteFileTool(productDir, writtenFiles);
@@ -58,12 +87,20 @@ export class CoderAgent extends ZeropsAgent {
       id: 'coder',
       name: 'Coder',
       instructions:
-        'You implement a Node.js/TypeScript Fastify service inside src/. Use the write_file tool ' +
-        'for every file you create; paths are relative to src/. Always write at least src/index.ts, ' +
-        'a Fastify server listening on process.env.PORT (default 3000) that implements every ' +
-        'endpoint from the proposal. Do not write package.json or tsconfig.json - those already exist.',
+        'You implement one Node.js/TypeScript Fastify service. Write code ONLY by calling the ' +
+        'write_file tool - never put source code in your text reply.\n' +
+        'PATHS: the `path` argument is always relative to the service\'s src/ directory, which ' +
+        'already exists. The entrypoint is therefore exactly "index.ts" - never "src/index.ts", ' +
+        'never an absolute path, never a path containing "..".\n' +
+        'Strongly prefer ONE self-contained file, "index.ts": a Fastify server that listens on ' +
+        'Number(process.env.PORT ?? 3000) with host "0.0.0.0" and implements every endpoint from ' +
+        'the proposal. Only split into more files if you truly cannot avoid it.\n' +
+        'The project compiles with `tsc --noEmit` under "strict": true and "moduleResolution": ' +
+        '"NodeNext", so every relative import between your own files MUST carry an explicit ' +
+        '".js" extension (e.g. import { x } from "./routes.js").\n' +
+        'Only "fastify" and "@types/node" are installed - do not import any other package.\n' +
+        'Do not write package.json or tsconfig.json; they already exist.',
       model: this.agentModel,
-      databaseUrl: this.databaseUrl,
       // Keys must match the toolName a tool-call refers to - the map key is the tool's public
       // name from the model's perspective, not the local variable name it's assigned from.
       tools: { write_file: writeFileTool, read_file: readFileTool },
@@ -82,7 +119,7 @@ export class CoderAgent extends ZeropsAgent {
     if (!compileResult.ok) {
       await this.db.update(products).set({ status: 'failed', updatedAt: new Date() }).where(eq(products.id, productId));
       await this.db.insert(taskEvents).values({
-        taskId: this.currentTaskId!,
+        taskId,
         role: 'coder',
         eventType: 'compile_failed',
         payload: { output: compileResult.output },
@@ -91,35 +128,33 @@ export class CoderAgent extends ZeropsAgent {
     }
 
     await this.db.insert(taskEvents).values({
-      taskId: this.currentTaskId!,
+      taskId,
       role: 'coder',
       eventType: 'code_generated',
       payload: { files: writtenFiles },
     });
-
-    const res = await fetch(`${this.controlPlaneUrl}/tasks`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'build-product', role: 'deployer', payload: { productId } }),
-    });
-    if (!res.ok) {
-      throw new Error(`failed to hand off to deployer: POST /tasks returned ${res.status}`);
-    }
   }
 
   private buildWriteFileTool(productDir: string, writtenFiles: string[]) {
     const srcRoot = path.join(productDir, 'src');
     return {
       id: 'write_file',
-      description: 'Write a file inside the product\'s src/ directory. Path is relative to src/.',
+      description:
+        'Write a source file. `path` is relative to the service\'s src/ directory and must NOT ' +
+        'start with "src/" - the entrypoint is "index.ts", not "src/index.ts".',
       inputSchema: z.object({ path: z.string(), content: z.string() }),
       outputSchema: z.object({ written: z.boolean() }),
       execute: async ({ context }: { context: { path: string; content: string } }) => {
         const { writeFile, mkdir } = await import('node:fs/promises');
-        const resolved = resolveScopedPath(srcRoot, context.path);
+        const relative = normalizeSrcRelativePath(context.path);
+        const resolved = resolveScopedPath(srcRoot, relative);
         await mkdir(path.dirname(resolved), { recursive: true });
         await writeFile(resolved, context.content, 'utf-8');
-        writtenFiles.push(context.path);
+        // Record where the file actually landed, not the raw LLM-supplied string: those two
+        // differ whenever the model prefixes "src/" (or uses backslashes), and a `code_generated`
+        // event listing paths that don't exist on disk is worse than useless to anything
+        // downstream that tries to read them back.
+        writtenFiles.push(path.relative(srcRoot, resolved).split(path.sep).join('/'));
         return { written: true };
       },
     };
@@ -129,12 +164,14 @@ export class CoderAgent extends ZeropsAgent {
     const srcRoot = path.join(productDir, 'src');
     return {
       id: 'read_file',
-      description: 'Read a previously written file back. Path is relative to src/.',
+      description:
+        'Read a previously written source file back. `path` is relative to the service\'s src/ ' +
+        'directory and must NOT start with "src/", exactly as for write_file.',
       inputSchema: z.object({ path: z.string() }),
       outputSchema: z.object({ content: z.string() }),
       execute: async ({ context }: { context: { path: string } }) => {
         const { readFile } = await import('node:fs/promises');
-        const resolved = resolveScopedPath(srcRoot, context.path);
+        const resolved = resolveScopedPath(srcRoot, normalizeSrcRelativePath(context.path));
         const content = await readFile(resolved, 'utf-8');
         return { content };
       },
@@ -147,7 +184,16 @@ export class CoderAgent extends ZeropsAgent {
       // without --ignore-workspace, pnpm walks up, finds that workspace root, and either
       // refuses to install (the directory isn't in `packages:`) or writes into the *repo's*
       // lockfile/store instead of treating this as the standalone project it actually is.
-      const { stdout, stderr } = await execAsync('pnpm install --ignore-workspace && npx tsc --noEmit', { cwd: productDir });
+      // timeout/maxBuffer are not optional niceties here: this shells out to a real network
+      // install plus a compiler, both driven by LLM-authored input. Without `timeout` a hung
+      // registry request would wedge the consumer forever (the task is never acked or nacked);
+      // without `maxBuffer` a verbose install/compile that exceeds Node's 1 MB default kills
+      // the child with ENOBUFS and reports it as a compile failure.
+      const { stdout, stderr } = await execAsync('pnpm install --ignore-workspace && npx tsc --noEmit', {
+        cwd: productDir,
+        timeout: 180_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
       return { ok: true, output: stdout + stderr };
     } catch (err) {
       const e = err as { stdout?: string; stderr?: string; message: string };
@@ -156,8 +202,17 @@ export class CoderAgent extends ZeropsAgent {
   }
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
+/**
+ * Normalizes an LLM-supplied path into one that is genuinely relative to `src/`.
+ *
+ * The tool contract is "relative to src/", but a model that has been told the project lives in
+ * src/ will sometimes hand back "src/index.ts" anyway - which, resolved against srcRoot,
+ * silently produced `src/src/index.ts` on disk (observed live alongside a correct
+ * `src/index.ts`). Stripping the redundant prefix here makes the contract enforced rather than
+ * merely stated. Backslashes are normalized first so a Windows-style path can't sneak past the
+ * prefix check. Traversal is still rejected downstream by `resolveScopedPath`.
+ */
+function normalizeSrcRelativePath(inputPath: string): string {
+  const unix = inputPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  return unix.replace(/^\/?src\//, '');
 }

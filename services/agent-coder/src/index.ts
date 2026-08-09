@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const redis = new Redis(valkeyUrl);
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const agent = new CoderAgent({ db, redis, nc, instanceId: randomUUID(), databaseUrl });
+  const agent = new CoderAgent({ db, redis, nc, instanceId: randomUUID() });
   await agent.start();
   console.log('[agent-coder] started');
 

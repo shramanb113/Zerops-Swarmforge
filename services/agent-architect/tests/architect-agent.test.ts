@@ -35,7 +35,6 @@ describe('ArchitectAgent', () => {
     agent = new ArchitectAgent({
       db, redis, nc, instanceId: 'test-architect-1',
       model: createMockModel({ object: PROPOSED }),
-      databaseUrl: DB_URL,
     });
     postTasksSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),

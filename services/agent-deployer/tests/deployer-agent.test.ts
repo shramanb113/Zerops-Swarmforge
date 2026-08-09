@@ -50,11 +50,12 @@ describe('DeployerAgent', () => {
     await mkdir(path.join(PRODUCTS_ROOT, productId), { recursive: true });
 
     agent = new DeployerAgent({
-      db, redis, nc, instanceId: 'test-deployer-1', databaseUrl: DB_URL,
+      db, redis, nc, instanceId: 'test-deployer-1',
       model: createMockModel({
         toolCalls: [
           { toolName: 'write_deploy_config', input: { hostname: 'hello-api' } },
           { toolName: 'run_zcli', input: { command: 'service-import', args: ['zerops-service-import.yaml'] } },
+          { toolName: 'run_zcli', input: { command: 'push', args: ['hello-api'] } },
         ],
       }),
     });
@@ -90,6 +91,15 @@ describe('DeployerAgent', () => {
     const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
     const deployEvent = events.find((e) => e.eventType === 'deploy_recorded');
     expect((deployEvent?.payload as { dryRun: boolean }).dryRun).toBe(true);
+
+    // The recorded commands must be real zcli invocations. `service-import` is nested under
+    // `project`; `push` is top-level. Blanket-prefixing every command with 'project' used to
+    // record `zcli project push hello-api`, which is not a command zcli has.
+    const commands = (deployEvent?.payload as { commands: string[] }).commands;
+    expect(commands).toEqual([
+      'zcli project service-import zerops-service-import.yaml',
+      'zcli push hello-api',
+    ]);
   });
 });
 

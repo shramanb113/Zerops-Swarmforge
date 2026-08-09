@@ -14,19 +14,16 @@ const TaskPayload = z.object({ description: z.string().min(1) });
 
 type ArchitectDeps = Omit<ZeropsAgentDeps, 'role'> & {
   model?: Parameters<typeof createAgent>[0]['model'];
-  databaseUrl?: string;
   controlPlaneUrl?: string;
 };
 
 export class ArchitectAgent extends ZeropsAgent {
   private readonly controlPlaneUrl: string;
   private readonly agentModel: Parameters<typeof createAgent>[0]['model'];
-  private readonly databaseUrl: string;
 
   constructor(deps: ArchitectDeps) {
     super({ ...deps, role: 'architect' });
     this.agentModel = deps.model;
-    this.databaseUrl = deps.databaseUrl ?? requireEnv('DATABASE_URL');
     this.controlPlaneUrl = deps.controlPlaneUrl ?? process.env.CONTROL_PLANE_URL ?? 'http://localhost:3000';
   }
 
@@ -59,7 +56,6 @@ export class ArchitectAgent extends ZeropsAgent {
           'responsibilities, a list of REST endpoints (method + path), and a simple data model. ' +
           'Do not propose multiple services or a non-Node.js stack.',
         model: this.agentModel,
-        databaseUrl: this.databaseUrl,
       });
 
       const response = await agent.generate(`Product description: ${description}`, {
@@ -102,10 +98,4 @@ export class ArchitectAgent extends ZeropsAgent {
       throw new Error(`failed to hand off to coder: POST /tasks returned ${res.status}`);
     }
   }
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
