@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { ZeropsAgent, type ZeropsAgentDeps, createAgent, slugify, products, architectureProposals, eq } from '@swarmforge/agent-framework';
+import { ZeropsAgent, type ZeropsAgentDeps, createAgent, slugify, products, architectureProposals, eq, LANGUAGES } from '@swarmforge/agent-framework';
 
 const ProposalSchema = z.object({
   serviceName: z.string().min(1),
@@ -8,6 +8,7 @@ const ProposalSchema = z.object({
   responsibilities: z.array(z.string()),
   endpoints: z.array(z.object({ method: z.string(), path: z.string() })),
   dataModel: z.record(z.unknown()),
+  language: z.enum(LANGUAGES),
 });
 
 const TaskPayload = z.object({ description: z.string().min(1) });
@@ -51,10 +52,15 @@ export class ArchitectAgent extends ZeropsAgent {
         id: 'architect',
         name: 'Architect',
         instructions:
-          'You design a single Node.js/TypeScript backend service, plus a minimal companion ' +
+          'You design a single backend service, plus a minimal companion ' +
           'frontend UI for it, from a product description. Propose exactly one backend service: ' +
           'a short name, a list of responsibilities, a list of REST endpoints (method + path), ' +
-          'and a simple data model. Do not propose multiple services or a non-Node.js stack. ' +
+          'and a simple data model. Do not propose multiple services.\n' +
+          'This product\'s backend can be built in TypeScript, Python, Go, or Rust. If the ' +
+          'product description explicitly names one of these four languages, use it. Otherwise, ' +
+          'pick whichever fits best: Go or Rust for CPU- or concurrency-heavy work, Python for ' +
+          'data-shaped or scripting-flavored products, TypeScript for everything else. Always ' +
+          'pick exactly one of the four - never propose a fifth language.\n' +
           'The summary must be two short paragraphs: first the backend service, then a second ' +
           'paragraph starting "Frontend:" describing the ONE screen a minimal, clean UI for this ' +
           'product would show and the key actions a user takes on it - concrete enough that ' +
@@ -75,6 +81,7 @@ export class ArchitectAgent extends ZeropsAgent {
         id: productId,
         name,
         description,
+        language: proposal.language,
         status: 'proposed',
       });
 

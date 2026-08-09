@@ -18,6 +18,7 @@ const PROPOSED = {
   responsibilities: ['CRUD operations on todo items'],
   endpoints: [{ method: 'GET', path: '/todos' }],
   dataModel: { todo: { id: 'string', title: 'string', done: 'boolean' } },
+  language: 'typescript',
 };
 
 describe('ArchitectAgent', () => {
@@ -114,5 +115,53 @@ describe('ArchitectAgent', () => {
 
     const productRows = await db.select().from(products).where(eq(products.id, firstProposal!.productId));
     expect(productRows).toHaveLength(1);
+  });
+
+  it('carries the proposed language through to the product row', async () => {
+    // The shared `agent` from beforeAll is still an active consumer on the same durable
+    // NATS consumer as any other role:'architect' instance (ZeropsAgent's durable name is
+    // keyed by role only, by design, so that multiple production replicas load-balance off
+    // one durable). Left running, it would race goAgent for the message published below and
+    // — deterministically, since it already holds the older/standing pull request — win every
+    // time, so `product.language` would come back 'typescript' from `agent`'s PROPOSED fixture
+    // instead of 'go' from goAgent's. Stop it first so goAgent is the only consumer for this
+    // task. It is not restarted: this is the last test in the file, and afterAll's
+    // `await agent.stop()` is a harmless no-op on an already-stopped agent.
+    await agent.stop();
+
+    const proposedGo = {
+      serviceName: 'Metrics Aggregator',
+      summary: 'A Go service that aggregates metrics.',
+      responsibilities: ['Aggregate incoming metrics'],
+      endpoints: [{ method: 'POST', path: '/metrics' }],
+      dataModel: { metric: { name: 'string', value: 'number' } },
+      language: 'go',
+    };
+    const goAgent = new ArchitectAgent({
+      db, redis, nc, instanceId: 'test-architect-go',
+      model: createMockModel({ object: proposedGo }),
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await goAgent.start();
+
+    const taskId = randomUUID();
+    await db.insert(tasks).values({
+      id: taskId, type: 'build-product', role: 'architect', payload: { description: 'a metrics service in Go' }, status: 'pending',
+    });
+    await publishTask(nc, 'architect', { taskId, role: 'architect', payload: { description: 'a metrics service in Go' } });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('done');
+    }, { timeout: 5000 });
+
+    const [proposal] = await db.select().from(architectureProposals).where(eq(architectureProposals.taskId, taskId));
+    const [product] = await db.select().from(products).where(eq(products.id, proposal!.productId));
+    expect(product?.language).toBe('go');
+
+    await goAgent.stop();
+    fetchSpy.mockRestore();
   });
 });
