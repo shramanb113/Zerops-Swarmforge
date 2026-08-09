@@ -32,4 +32,18 @@ describe('products and architectureProposals schema', () => {
     const [proposal] = await db.select().from(architectureProposals).where(eq(architectureProposals.productId, productId));
     expect(proposal?.serviceName).toBe('todo-api');
   });
+
+  it('defaults language to typescript and accepts an explicit value', async () => {
+    const defaultId = randomUUID();
+    await db.insert(products).values({ id: defaultId, name: 'default-lang-api', description: 'x', status: 'proposed' });
+    const [defaultRow] = await db.select().from(products).where(eq(products.id, defaultId));
+    expect(defaultRow?.language).toBe('typescript');
+
+    const pythonId = randomUUID();
+    await db.insert(products).values({
+      id: pythonId, name: 'python-api', description: 'x', status: 'proposed', language: 'python',
+    });
+    const [pythonRow] = await db.select().from(products).where(eq(products.id, pythonId));
+    expect(pythonRow?.language).toBe('python');
+  });
 });

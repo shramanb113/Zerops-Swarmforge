@@ -28,6 +28,7 @@ export const products = pgTable('products', {
   id: uuid('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   name: text('name').notNull(),
   description: text('description').notNull(),
+  language: text('language').notNull().default('typescript'),
   status: text('status').notNull().default('proposed'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

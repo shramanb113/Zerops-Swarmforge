@@ -13,3 +13,4 @@ export {
 } from './queue.js';
 export { ZeropsAgent, type ZeropsAgentDeps } from './agent.js';
 export { createAgent, slugify, resolveScopedPath, type CreateAgentOptions } from './mastra.js';
+export { LANGUAGES, type Language } from './language.js';

@@ -15,6 +15,13 @@
       "when": 1786027676357,
       "tag": "0001_big_swordsman",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786262149771,
+      "tag": "0002_fixed_vanisher",
+      "breakpoints": true
     }
   ]
 }

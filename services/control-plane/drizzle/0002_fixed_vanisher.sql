@@ -1,0 +1,1 @@
+ALTER TABLE "products" ADD COLUMN "language" text DEFAULT 'typescript' NOT NULL;
