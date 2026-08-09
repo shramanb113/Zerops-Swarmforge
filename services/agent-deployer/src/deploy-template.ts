@@ -2,7 +2,7 @@ export function renderZeropsYaml(hostname: string): string {
   return `zerops:
   - setup: ${hostname}
     build:
-      base: ubuntu/nodejs@22
+      base: nodejs@22
       buildCommands:
         - corepack enable
         - pnpm install
@@ -12,7 +12,7 @@ export function renderZeropsYaml(hostname: string): string {
         - package.json
         - node_modules
     run:
-      base: ubuntu/nodejs@22
+      base: nodejs@22
       start: node dist/index.js
       ports:
         - port: 3000
@@ -23,7 +23,7 @@ export function renderZeropsYaml(hostname: string): string {
 export function renderServiceImportYaml(hostname: string): string {
   return `services:
   - hostname: ${hostname}
-    type: ubuntu/nodejs@22
+    type: nodejs@22
     enableSubdomainAccess: true
 `;
 }
