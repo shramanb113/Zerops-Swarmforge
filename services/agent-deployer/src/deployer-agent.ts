@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { ZeropsAgent, type ZeropsAgentDeps, createAgent, slugify, products, taskEvents, and, eq } from '@swarmforge/agent-framework';
 import { renderZeropsYaml, renderServiceImportYaml } from './deploy-template.js';
+import { validateDeploySequence } from './deploy-sequence-check.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -127,11 +128,37 @@ export class DeployerAgent extends ZeropsAgent {
 
     await agent.generate(`Deploy "${hostname}" now, in the order described in your instructions.`);
 
+    const attempts: Array<{ ok: boolean; commands: string[] }> = [];
+    let check = validateDeploySequence(commands, hostname);
+    attempts.push({ ok: check.ok, commands: [...commands] });
+
+    if (!check.ok) {
+      const message =
+        `Your previous attempt made these tool calls: ${JSON.stringify(check.actual)}. ` +
+        `The required sequence is exactly: ${JSON.stringify(check.expected)}, in that order. ` +
+        'Call the missing/correct tools now to complete the deployment correctly.';
+      commands.length = 0;
+      await agent.generate(message);
+      check = validateDeploySequence(commands, hostname);
+      attempts.push({ ok: check.ok, commands: [...commands] });
+    }
+
+    if (!check.ok) {
+      await this.db.update(products).set({ status: 'failed', updatedAt: new Date() }).where(eq(products.id, productId));
+      await this.db.insert(taskEvents).values({
+        taskId,
+        role: 'deployer',
+        eventType: 'deploy_sequence_invalid',
+        payload: { attempts },
+      });
+      throw new Error(`deployer produced an invalid tool-call sequence for product ${productId} after retry`);
+    }
+
     await this.db.insert(taskEvents).values({
       taskId,
       role: 'deployer',
       eventType: 'deploy_recorded',
-      payload: { dryRun: this.dryRun, commands },
+      payload: { dryRun: this.dryRun, commands, attempts: attempts.length },
     });
 
     await this.db.update(products).set({ status: 'deployed', updatedAt: new Date() }).where(eq(products.id, productId));

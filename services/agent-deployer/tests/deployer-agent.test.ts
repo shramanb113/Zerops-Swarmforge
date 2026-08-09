@@ -103,6 +103,155 @@ describe('DeployerAgent', () => {
   });
 });
 
+describe('DeployerAgent sequence retry', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: DeployerAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'deployer');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'retry-deploy-api', description: 'says hello', status: 'coding' });
+    await mkdir(path.join(PRODUCTS_ROOT, productId), { recursive: true });
+
+    agent = new DeployerAgent({
+      db, redis, nc, instanceId: 'test-deployer-retry',
+      model: createMockModel({
+        rounds: [
+          {
+            // Wrong order: push before service-import.
+            toolCalls: [
+              { toolName: 'write_deploy_config', input: { hostname: 'retry-deploy-api' } },
+              { toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-api'] } },
+            ],
+          },
+          {
+            toolCalls: [
+              { toolName: 'run_zcli', input: { command: 'service-import', args: ['zerops-service-import.yaml'] } },
+              { toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-api'] } },
+            ],
+          },
+        ],
+      }),
+    });
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  });
+
+  it('retries once on a wrong tool-call sequence and succeeds on the corrected order', async () => {
+    const taskId = randomUUID();
+    const payload = { productId };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'deployer', payload, status: 'pending' });
+    await publishTask(nc, 'deployer', { taskId, role: 'deployer', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('done');
+    }, { timeout: 15000 });
+
+    const [product] = await db.select().from(products).where(eq(products.id, productId));
+    expect(product?.status).toBe('deployed');
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    expect(events.some((e) => e.eventType === 'deploy_sequence_invalid')).toBe(false);
+
+    const deployEvent = events.find((e) => e.eventType === 'deploy_recorded');
+    expect((deployEvent?.payload as { attempts: number }).attempts).toBe(2);
+    const commands = (deployEvent?.payload as { commands: string[] }).commands;
+    expect(commands).toEqual([
+      'zcli project service-import zerops-service-import.yaml',
+      'zcli push retry-deploy-api',
+    ]);
+  }, 20000);
+});
+
+describe('DeployerAgent sequence failure after retry', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: DeployerAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'deployer');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'retry-deploy-fail-api', description: 'says hello', status: 'coding' });
+    await mkdir(path.join(PRODUCTS_ROOT, productId), { recursive: true });
+
+    agent = new DeployerAgent({
+      db, redis, nc, instanceId: 'test-deployer-fail',
+      // The mock model's script is finite (exactly the 2 rounds this test needs for the
+      // in-process retry loop under test). Without capping maxDeliver at 1, a genuine final
+      // failure here still naks (deliveryCount 1 < the framework's default maxDeliver of 5) and
+      // NATS redelivers the whole task - which calls onTask again against a mock model that has
+      // already exhausted every scripted round (it keeps repeating its last, text-only step, so
+      // `commands` stays empty and the sequence check keeps failing "correctly" but for the
+      // wrong reason) - a NATS-redelivery/exhausted-mock interaction orthogonal to what this
+      // test verifies (the local retry-loop's own control flow), and confirmed empirically: left
+      // uncapped, this task took 5 deliveries and ~16s, writing 5 duplicate `deploy_sequence_
+      // invalid` events, before finally landing on `failed`. Same fix as CoderAgent's analogous
+      // "failure after retry" test (services/agent-coder/tests/coder-agent.test.ts).
+      maxDeliver: 1,
+      model: createMockModel({
+        rounds: [
+          // Missing both run_zcli calls entirely.
+          { toolCalls: [{ toolName: 'write_deploy_config', input: { hostname: 'retry-deploy-fail-api' } }] },
+          // Still wrong: only `push`, missing `service-import`.
+          { toolCalls: [{ toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-fail-api'] } }] },
+        ],
+      }),
+    });
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  });
+
+  it('fails the task when the tool-call sequence is still wrong after one retry', async () => {
+    const taskId = randomUUID();
+    const payload = { productId };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'deployer', payload, status: 'pending' });
+    await publishTask(nc, 'deployer', { taskId, role: 'deployer', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('failed');
+    }, { timeout: 15000 });
+
+    const [product] = await db.select().from(products).where(eq(products.id, productId));
+    expect(product?.status).toBe('failed');
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    expect(events.some((e) => e.eventType === 'deploy_recorded')).toBe(false);
+
+    const invalidEvent = events.find((e) => e.eventType === 'deploy_sequence_invalid');
+    expect(invalidEvent).toBeDefined();
+    expect((invalidEvent?.payload as { attempts: unknown[] }).attempts).toHaveLength(2);
+  }, 20000);
+});
+
 /**
  * Clears all JetStream state for one role: drops its durable consumer (resetting delivery
  * counts) and purges any messages still sitting on its subject. Both outlive the test process -
