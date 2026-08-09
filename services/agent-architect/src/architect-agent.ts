@@ -51,10 +51,15 @@ export class ArchitectAgent extends ZeropsAgent {
         id: 'architect',
         name: 'Architect',
         instructions:
-          'You design a single Node.js/TypeScript backend service from a product description. ' +
-          'Propose exactly one service: a short name, a one-paragraph summary, a list of ' +
-          'responsibilities, a list of REST endpoints (method + path), and a simple data model. ' +
-          'Do not propose multiple services or a non-Node.js stack.',
+          'You design a single Node.js/TypeScript backend service, plus a minimal companion ' +
+          'frontend UI for it, from a product description. Propose exactly one backend service: ' +
+          'a short name, a list of responsibilities, a list of REST endpoints (method + path), ' +
+          'and a simple data model. Do not propose multiple services or a non-Node.js stack. ' +
+          'The summary must be two short paragraphs: first the backend service, then a second ' +
+          'paragraph starting "Frontend:" describing the ONE screen a minimal, clean UI for this ' +
+          'product would show and the key actions a user takes on it - concrete enough that ' +
+          'someone could build it without asking follow-up questions, but no more than a few ' +
+          'sentences.',
         model: this.agentModel,
       });
 

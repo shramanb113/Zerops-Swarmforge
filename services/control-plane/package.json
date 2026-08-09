@@ -8,6 +8,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
+    "@fastify/cors": "^11.3.0",
     "@swarmforge/agent-framework": "workspace:*",
     "drizzle-orm": "^0.36.4",
     "fastify": "^5.1.0",

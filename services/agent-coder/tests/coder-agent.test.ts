@@ -121,8 +121,11 @@ describe('CoderAgent', () => {
     const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
     expect(events.some((e) => e.eventType === 'task_started')).toBe(true);
     const codeGenerated = events.find((e) => e.eventType === 'code_generated');
+    const files = (codeGenerated?.payload as { files: Array<{ path: string; content: string }> } | undefined)?.files;
     // The *resolved* path relative to src/, not the raw string the model sent.
-    expect((codeGenerated?.payload as { files: string[] } | undefined)?.files).toEqual(['index.ts']);
+    expect(files?.map((f) => f.path)).toEqual(['index.ts']);
+    // Content is captured verbatim from what was actually written, not re-read from disk.
+    expect(files?.[0]?.content).toContain("app.get('/hello'");
     // Longer than the default 15s testTimeout (vitest.config.ts) and matching the vi.waitFor
     // budget above - the compile-check step does a real `pnpm install`/`tsc --noEmit` network
     // round-trip against products/<id>/, which the 15s default doesn't leave room for on top of

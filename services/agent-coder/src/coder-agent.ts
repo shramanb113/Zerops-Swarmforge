@@ -79,7 +79,7 @@ export class CoderAgent extends ZeropsAgent {
     // to be true because ArchitectAgent is currently the only writer. slugify is idempotent.
     await scaffoldProduct(productDir, slugify(product.name));
 
-    const writtenFiles: string[] = [];
+    const writtenFiles: Array<{ path: string; content: string }> = [];
     const writeFileTool = this.buildWriteFileTool(productDir, writtenFiles);
     const readFileTool = this.buildReadFileTool(productDir);
 
@@ -87,19 +87,27 @@ export class CoderAgent extends ZeropsAgent {
       id: 'coder',
       name: 'Coder',
       instructions:
-        'You implement one Node.js/TypeScript Fastify service. Write code ONLY by calling the ' +
-        'write_file tool - never put source code in your text reply.\n' +
+        'You implement one Node.js/TypeScript Fastify service AND its companion frontend. Write ' +
+        'code ONLY by calling the write_file tool - never put source code in your text reply.\n' +
         'PATHS: the `path` argument is always relative to the service\'s src/ directory, which ' +
         'already exists. The entrypoint is therefore exactly "index.ts" - never "src/index.ts", ' +
         'never an absolute path, never a path containing "..".\n' +
-        'Strongly prefer ONE self-contained file, "index.ts": a Fastify server that listens on ' +
-        'Number(process.env.PORT ?? 3000) with host "0.0.0.0" and implements every endpoint from ' +
-        'the proposal. Only split into more files if you truly cannot avoid it.\n' +
+        'Strongly prefer ONE self-contained backend file, "index.ts": a Fastify server that ' +
+        'listens on Number(process.env.PORT ?? 3000) with host "0.0.0.0" and implements every ' +
+        'endpoint from the proposal. Only split into more .ts files if you truly cannot avoid it.\n' +
         'The project compiles with `tsc --noEmit` under "strict": true and "moduleResolution": ' +
-        '"NodeNext", so every relative import between your own files MUST carry an explicit ' +
+        '"NodeNext", so every relative import between your own .ts files MUST carry an explicit ' +
         '".js" extension (e.g. import { x } from "./routes.js").\n' +
         'Only "fastify" and "@types/node" are installed - do not import any other package.\n' +
-        'Do not write package.json or tsconfig.json; they already exist.',
+        'Do not write package.json or tsconfig.json; they already exist.\n' +
+        'ALSO write exactly one more file, "frontend.html" (not under any subfolder): a single ' +
+        'self-contained static HTML page - inline <style> and <script>, zero external ' +
+        'dependencies, zero build step - implementing the ONE screen described in the proposal\'s ' +
+        '"Frontend:" paragraph. It is never checked by tsc and never imports the backend file, so ' +
+        'wire it up with realistic inline sample data (const literals) rather than a live fetch() ' +
+        'to the backend - it must render meaningfully opened on its own. Design it minimal and ' +
+        'clean: generous whitespace, a clear visual hierarchy, restrained color use, no lorem ' +
+        'ipsum placeholder text.',
       model: this.agentModel,
       // Keys must match the toolName a tool-call refers to - the map key is the tool's public
       // name from the model's perspective, not the local variable name it's assigned from.
@@ -110,7 +118,8 @@ export class CoderAgent extends ZeropsAgent {
       `Architecture proposal for "${proposal.serviceName}": ${proposal.summary}\n` +
         `Endpoints: ${JSON.stringify(proposal.endpoints)}\n` +
         `Data model: ${JSON.stringify(proposal.dataModel)}\n` +
-        'Implement this service now, writing every file with the write_file tool.',
+        'Implement this now: call write_file for "index.ts" (the backend) and again for ' +
+        '"frontend.html" (the UI) - both are required.',
     );
 
     await this.db.update(products).set({ status: 'coding', updatedAt: new Date() }).where(eq(products.id, productId));
@@ -135,7 +144,7 @@ export class CoderAgent extends ZeropsAgent {
     });
   }
 
-  private buildWriteFileTool(productDir: string, writtenFiles: string[]) {
+  private buildWriteFileTool(productDir: string, writtenFiles: Array<{ path: string; content: string }>) {
     const srcRoot = path.join(productDir, 'src');
     return {
       id: 'write_file',
@@ -153,8 +162,10 @@ export class CoderAgent extends ZeropsAgent {
         // Record where the file actually landed, not the raw LLM-supplied string: those two
         // differ whenever the model prefixes "src/" (or uses backslashes), and a `code_generated`
         // event listing paths that don't exist on disk is worse than useless to anything
-        // downstream that tries to read them back.
-        writtenFiles.push(path.relative(srcRoot, resolved).split(path.sep).join('/'));
+        // downstream that tries to read them back. Content is captured here (what was actually
+        // written) rather than re-read from disk later, so the dashboard's code viewer has exact
+        // parity with what got compiled.
+        writtenFiles.push({ path: path.relative(srcRoot, resolved).split(path.sep).join('/'), content: context.content });
         return { written: true };
       },
     };

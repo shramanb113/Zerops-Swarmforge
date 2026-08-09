@@ -112,8 +112,8 @@ async function main(): Promise<void> {
     if (!codeEvent) {
       throw new Error(`no code_generated event on any task of product ${productId}`);
     }
-    const files = (codeEvent.payload as { files?: string[] }).files ?? [];
-    if (!files.some((f) => /(^|\/)index\.ts$/.test(f))) {
+    const files = (codeEvent.payload as { files?: Array<{ path: string }> }).files ?? [];
+    if (!files.some((f) => /(^|\/)index\.ts$/.test(f.path))) {
       throw new Error(`code_generated for product ${productId} lists no index.ts: ${JSON.stringify(files)}`);
     }
     console.log(`code_generated event traced to task ${codeEvent.taskId}, files: ${JSON.stringify(files)}`);
