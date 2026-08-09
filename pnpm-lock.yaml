@@ -115,6 +115,36 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
+  services/agent-deployer:
+    dependencies:
+      '@ai-sdk/groq':
+        specifier: ^1.0.0
+        version: 1.2.9(zod@3.25.76)
+      '@mastra/core':
+        specifier: ^0.10.0
+        version: 0.10.15(openapi-types@12.1.3)(react@19.2.8)(zod@3.25.76)
+      '@mastra/memory':
+        specifier: ^0.10.0
+        version: 0.10.4(@mastra/core@0.10.15(openapi-types@12.1.3)(react@19.2.8)(zod@3.25.76))(react@19.2.8)
+      '@mastra/pg':
+        specifier: ^0.10.0
+        version: 0.10.3(@mastra/core@0.10.15(openapi-types@12.1.3)(react@19.2.8)(zod@3.25.76))(pg-query-stream@4.10.3(pg@8.22.0))
+      '@swarmforge/agent-framework':
+        specifier: workspace:*
+        version: link:../../packages/agent-framework
+      drizzle-orm:
+        specifier: ^0.36.4
+        version: 0.36.4(@opentelemetry/api@1.9.1)(@types/pg@8.20.4)(pg@8.22.0)(postgres@3.4.9)(react@19.2.8)
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
+      nats:
+        specifier: ^2.29.2
+        version: 2.29.3
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   services/control-plane:
     dependencies:
       '@swarmforge/agent-framework':
