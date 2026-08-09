@@ -1,16 +1,12 @@
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
   ZeropsAgent, type ZeropsAgentDeps, createAgent, resolveScopedPath, slugify,
-  products, architectureProposals, taskEvents, and, eq,
+  products, architectureProposals, taskEvents, and, eq, type Language,
 } from '@swarmforge/agent-framework';
-import { scaffoldProduct } from './product-template.js';
+import { CODER_LANGUAGE_PROFILES, FRONTEND_INSTRUCTIONS, type CoderLanguageProfile } from './languages/index.js';
 import { checkFrontendSyntax } from './frontend-syntax-check.js';
-
-const execAsync = promisify(exec);
 
 const TaskPayload = z.object({ productId: z.string().uuid(), proposalId: z.string().uuid() });
 
@@ -90,11 +86,16 @@ export class CoderAgent extends ZeropsAgent {
 
     const productDir = path.join(PRODUCTS_ROOT, productId);
     // Re-slugify at the point of use rather than trusting that whoever wrote this row already
-    // did. `name` ends up as the generated package.json's `name` field; the global constraint
+    // did. `name` ends up as the generated manifest's `name` field; the global constraint
     // is that any name reaching a filesystem path, shell argument or Zerops hostname is
     // slugify() output, and that must hold as an invariant, not as a convention that happens
     // to be true because ArchitectAgent is currently the only writer. slugify is idempotent.
-    await scaffoldProduct(productDir, slugify(product.name));
+    const hostname = slugify(product.name);
+    // `product.language as Language` is not trusted as an invariant either, for the same
+    // reason - if it's ever a value outside the four registered profiles, fall back to
+    // TypeScript rather than crash the task.
+    const profile = CODER_LANGUAGE_PROFILES[product.language as Language] ?? CODER_LANGUAGE_PROFILES.typescript!;
+    await profile.scaffold(productDir, hostname);
 
     const writtenFiles: Array<{ path: string; content: string }> = [];
     const writeFileTool = this.buildWriteFileTool(productDir, writtenFiles);
@@ -103,34 +104,7 @@ export class CoderAgent extends ZeropsAgent {
     const agent = createAgent({
       id: 'coder',
       name: 'Coder',
-      instructions:
-        'You implement one Node.js/TypeScript Fastify service AND its companion frontend. Write ' +
-        'code ONLY by calling the write_file tool - never put source code in your text reply.\n' +
-        'PATHS: the `path` argument is always relative to the service\'s src/ directory, which ' +
-        'already exists. The entrypoint is therefore exactly "index.ts" - never "src/index.ts", ' +
-        'never an absolute path, never a path containing "..".\n' +
-        'Strongly prefer ONE self-contained backend file, "index.ts": a Fastify server that ' +
-        'listens on Number(process.env.PORT ?? 3000) with host "0.0.0.0" and implements every ' +
-        'endpoint from the proposal. Only split into more .ts files if you truly cannot avoid it.\n' +
-        'The project compiles with `tsc --noEmit` under "strict": true and "moduleResolution": ' +
-        '"NodeNext", so every relative import between your own .ts files MUST carry an explicit ' +
-        '".js" extension (e.g. import { x } from "./routes.js").\n' +
-        'Only "fastify" and "@types/node" are installed - do not import any other package.\n' +
-        'Do not write package.json or tsconfig.json; they already exist.\n' +
-        'ALSO write exactly one more file, "frontend.html" (not under any subfolder): a single ' +
-        'self-contained static HTML page - inline <style> and <script>, zero external ' +
-        'dependencies, zero build step - implementing the ONE screen described in the proposal\'s ' +
-        '"Frontend:" paragraph. It is never checked by tsc and never imports the backend file, so ' +
-        'wire it up with realistic inline sample data (const literals) rather than a live fetch() ' +
-        'to the backend - it must render meaningfully opened on its own. Design it minimal and ' +
-        'clean: generous whitespace, a clear visual hierarchy, restrained color use, no lorem ' +
-        'ipsum placeholder text.\n' +
-        'The <script> in frontend.html runs directly in the browser with NO transpile step - it ' +
-        'is plain JavaScript, NOT TypeScript. Never write TypeScript-only syntax there: no `as ' +
-        'SomeType` casts, no `: type` annotations on variables/params/returns, no interfaces. A ' +
-        'single such statement throws a SyntaxError that silently kills every event listener in ' +
-        'the whole script block, not just that line - this has actually happened, so treat it as ' +
-        'a hard rule, not a style preference.',
+      instructions: profile.instructions(hostname) + FRONTEND_INSTRUCTIONS,
       model: this.agentModel,
       // Keys must match the toolName a tool-call refers to - the map key is the tool's public
       // name from the model's perspective, not the local variable name it's assigned from.
@@ -148,7 +122,7 @@ export class CoderAgent extends ZeropsAgent {
     await this.db.update(products).set({ status: 'coding', updatedAt: new Date() }).where(eq(products.id, productId));
 
     const attempts: Array<{ stage: 'frontend-syntax' | 'backend-tsc'; output: string }> = [];
-    let check = await this.runChecks(productDir, writtenFiles);
+    let check = await this.runChecks(productDir, writtenFiles, profile);
     if (!check.ok) {
       attempts.push({ stage: check.stage, output: check.output });
       const checkName = check.stage === 'frontend-syntax'
@@ -158,7 +132,7 @@ export class CoderAgent extends ZeropsAgent {
         `Your previous attempt failed the ${checkName}:\n\n${check.output}\n\n` +
           'Fix this now by calling write_file again for the affected file with corrected content.',
       );
-      check = await this.runChecks(productDir, writtenFiles);
+      check = await this.runChecks(productDir, writtenFiles, profile);
       if (!check.ok) attempts.push({ stage: check.stage, output: check.output });
     }
 
@@ -184,11 +158,12 @@ export class CoderAgent extends ZeropsAgent {
   private async runChecks(
     productDir: string,
     writtenFiles: Array<{ path: string; content: string }>,
+    profile: CoderLanguageProfile,
   ): Promise<CheckResult> {
     const frontendResult = checkFrontendSyntax(writtenFiles);
     if (!frontendResult.ok) return { ok: false, stage: 'frontend-syntax', output: frontendResult.output };
 
-    const compileResult = await this.compileCheck(productDir);
+    const compileResult = await profile.compileCheck(productDir);
     if (!compileResult.ok) return { ok: false, stage: 'backend-tsc', output: compileResult.output };
 
     return { ok: true };
@@ -237,29 +212,6 @@ export class CoderAgent extends ZeropsAgent {
         return { content };
       },
     };
-  }
-
-  private async compileCheck(productDir: string): Promise<{ ok: boolean; output: string }> {
-    try {
-      // `products/<id>/` sits inside this repo, nested under the root pnpm-workspace.yaml -
-      // without --ignore-workspace, pnpm walks up, finds that workspace root, and either
-      // refuses to install (the directory isn't in `packages:`) or writes into the *repo's*
-      // lockfile/store instead of treating this as the standalone project it actually is.
-      // timeout/maxBuffer are not optional niceties here: this shells out to a real network
-      // install plus a compiler, both driven by LLM-authored input. Without `timeout` a hung
-      // registry request would wedge the consumer forever (the task is never acked or nacked);
-      // without `maxBuffer` a verbose install/compile that exceeds Node's 1 MB default kills
-      // the child with ENOBUFS and reports it as a compile failure.
-      const { stdout, stderr } = await execAsync('pnpm install --ignore-workspace && npx tsc --noEmit', {
-        cwd: productDir,
-        timeout: 180_000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      return { ok: true, output: stdout + stderr };
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      return { ok: false, output: (e.stdout ?? '') + (e.stderr ?? '') || e.message };
-    }
   }
 }
 
