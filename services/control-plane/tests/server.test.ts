@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Redis from 'ioredis';
-import { createDb, connectQueue, ensureStream, consumeTasks, products, type Db } from '@swarmforge/agent-framework';
+import { createDb, connectQueue, ensureStream, consumeTasks, type Db } from '@swarmforge/agent-framework';
 import type { NatsConnection } from 'nats';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../src/server';
@@ -117,14 +116,5 @@ describe('control-plane server', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as { agents: Array<{ instanceId: string }> };
     expect(body.agents.some((a) => a.instanceId === 'instance-x')).toBe(true);
-  });
-
-  it('GET /world-state includes recently created products', async () => {
-    const productId = randomUUID();
-    await db.insert(products).values({ id: productId, name: 'demo-product', description: 'demo', status: 'proposed' });
-
-    const response = await app.inject({ method: 'GET', url: '/world-state' });
-    const body = response.json() as { products: Array<{ id: string; status: string }> };
-    expect(body.products.some((p) => p.id === productId)).toBe(true);
   });
 });

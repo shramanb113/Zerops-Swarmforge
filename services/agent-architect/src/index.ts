@@ -7,7 +7,6 @@ async function main(): Promise<void> {
   const databaseUrl = requireEnv('DATABASE_URL');
   const natsUrl = requireEnv('NATS_URL');
   const valkeyUrl = requireEnv('VALKEY_URL');
-  requireEnv('GROQ_API_KEY'); // read by Mastra's model router directly from process.env
 
   const db = await createDb(databaseUrl);
   const nc = await connectQueue(natsUrl);
@@ -17,14 +16,8 @@ async function main(): Promise<void> {
   // throws, so without this a Valkey blip would crash the process.
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const instanceId = randomUUID();
-  const agent = new ArchitectAgent({ db, redis, nc, instanceId });
+  const agent = new ArchitectAgent({ db, redis, nc, instanceId: randomUUID() });
   await agent.start();
-  // Log only the instance id, never the agent object itself — it holds live `db`/`redis`
-  // clients whose config (including the Postgres password) is reachable as ordinary
-  // enumerable properties at runtime, since TypeScript's `private`/`protected` modifiers
-  // are compile-time only.
-  console.log('[agent-architect] started, instance', instanceId);
 
   process.on('SIGTERM', () => void agent.stop());
 }

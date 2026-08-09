@@ -4,26 +4,20 @@ project:
 
 services:
   - hostname: postgres
-    type: postgresql@16
+    type: postgresql:single@16
     mode: NON_HA
 
   - hostname: valkey
-    type: valkey@7.2
+    type: valkey:single@7.2
     mode: NON_HA
 
   - hostname: nats
-    type: nats@2.12
+    type: nats:single@2.12
     mode: NON_HA
 
   - hostname: control-plane
-    type: nodejs@22
+    type: ubuntu/nodejs@22
     enableSubdomainAccess: true
 
   - hostname: agent-architect
-    type: nodejs@22
-
-  - hostname: agent-coder
-    type: nodejs@22
-
-  - hostname: agent-deployer
-    type: nodejs@22
+    type: ubuntu/nodejs@22
