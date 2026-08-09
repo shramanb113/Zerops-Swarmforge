@@ -60,3 +60,48 @@ zerops:
         DATABASE_URL: '${postgres_connectionString}'
         NATS_URL: '${nats_connectionString}'
         VALKEY_URL: '${valkey_connectionString}'
+      envSecrets:
+        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
+
+  - setup: agent-coder
+    build:
+      base: nodejs@22
+      buildCommands:
+        - corepack enable
+        - pnpm install --frozen-lockfile
+        - pnpm --filter @swarmforge/agent-framework build
+        - pnpm --filter agent-coder build
+        - pnpm --filter agent-coder deploy --prod --config.node-linker=hoisted out/agent-coder
+      deployFiles:
+        - out/agent-coder
+    run:
+      base: nodejs@22
+      start: node out/agent-coder/dist/index.js
+      envVariables:
+        DATABASE_URL: '${postgres_connectionString}'
+        NATS_URL: '${nats_connectionString}'
+        VALKEY_URL: '${valkey_connectionString}'
+      envSecrets:
+        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
+
+  - setup: agent-deployer
+    build:
+      base: nodejs@22
+      buildCommands:
+        - corepack enable
+        - pnpm install --frozen-lockfile
+        - pnpm --filter @swarmforge/agent-framework build
+        - pnpm --filter agent-deployer build
+        - pnpm --filter agent-deployer deploy --prod --config.node-linker=hoisted out/agent-deployer
+      deployFiles:
+        - out/agent-deployer
+    run:
+      base: nodejs@22
+      start: node out/agent-deployer/dist/index.js
+      envVariables:
+        DATABASE_URL: '${postgres_connectionString}'
+        NATS_URL: '${nats_connectionString}'
+        VALKEY_URL: '${valkey_connectionString}'
+        DEPLOY_DRY_RUN: 'true'
+      envSecrets:
+        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
