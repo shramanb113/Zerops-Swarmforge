@@ -551,6 +551,92 @@ describe('CoderAgent compile_failed idempotency guard', () => {
   }, 10000);
 });
 
+describe('CoderAgent Python product', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: CoderAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'coder');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({
+      id: productId, name: 'hello-py-api', description: 'says hello', status: 'proposed', language: 'python',
+    });
+    await db.insert(architectureProposals).values({
+      id: randomUUID(),
+      productId,
+      serviceName: 'hello-py-api',
+      summary: 'Responds with a greeting.',
+      endpoints: [{ method: 'GET', path: '/hello' }],
+      dataModel: {},
+    });
+
+    agent = new CoderAgent({
+      db, redis, nc, instanceId: 'test-coder-python',
+      model: createMockModel({
+        toolCalls: [{
+          toolName: 'write_file',
+          input: {
+            path: 'main.py',
+            content:
+              "import os\n" +
+              "import uvicorn\n" +
+              "from fastapi import FastAPI\n\n" +
+              "app = FastAPI()\n\n" +
+              "@app.get('/hello')\n" +
+              "def hello():\n" +
+              "    return {'message': 'hello'}\n\n" +
+              "if __name__ == '__main__':\n" +
+              "    uvicorn.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 3000)))\n",
+          },
+        }],
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    vi.restoreAllMocks();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  }, 60000);
+
+  it('scaffolds requirements.txt and writes a working main.py', async () => {
+    const taskId = randomUUID();
+    const payload = { productId, proposalId: randomUUID() };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'coder', payload, status: 'pending' });
+    await publishTask(nc, 'coder', { taskId, role: 'coder', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(['done', 'failed']).toContain(row?.status);
+    }, { timeout: 90000 });
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    expect(row?.status).toBe('done');
+
+    expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'requirements.txt'))).toBe(true);
+    expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'src', 'main.py'))).toBe(true);
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    const codeGenerated = events.find((e) => e.eventType === 'code_generated');
+    const files = (codeGenerated?.payload as { files: Array<{ path: string }> } | undefined)?.files;
+    expect(files?.map((f) => f.path)).toEqual(['main.py']);
+  }, 100000);
+});
+
 /**
  * Clears all JetStream state for one role: drops its durable consumer (resetting delivery
  * counts) and purges any messages still sitting on its subject. Both outlive the test process -
