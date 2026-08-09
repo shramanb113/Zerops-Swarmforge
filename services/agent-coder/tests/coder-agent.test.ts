@@ -133,6 +133,316 @@ describe('CoderAgent', () => {
   }, 60000);
 });
 
+describe('CoderAgent frontend-syntax retry', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: CoderAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'coder');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'retry-frontend-api', description: 'says hello', status: 'proposed' });
+    await db.insert(architectureProposals).values({
+      id: randomUUID(),
+      productId,
+      serviceName: 'retry-frontend-api',
+      summary: 'Responds with a greeting. Frontend: a page showing the greeting.',
+      endpoints: [{ method: 'GET', path: '/hello' }],
+      dataModel: {},
+    });
+
+    agent = new CoderAgent({
+      db, redis, nc, instanceId: 'test-coder-frontend-retry',
+      model: createMockModel({
+        rounds: [
+          {
+            toolCalls: [
+              {
+                toolName: 'write_file',
+                input: {
+                  path: 'index.ts',
+                  content:
+                    "import Fastify from 'fastify';\n" +
+                    "const app = Fastify();\n" +
+                    "app.get('/hello', async () => ({ message: 'hello' }));\n" +
+                    "app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });\n",
+                },
+              },
+              {
+                toolName: 'write_file',
+                input: {
+                  // Deliberately the same class of bug the prompt guardrail is meant to catch:
+                  // a TypeScript-only `as` cast in a plain-JS <script>.
+                  path: 'frontend.html',
+                  content: '<html><body><script>const msg = "hi" as string; document.body.textContent = msg;</script></body></html>',
+                },
+              },
+            ],
+          },
+          {
+            toolCalls: [{
+              toolName: 'write_file',
+              input: {
+                path: 'frontend.html',
+                content: '<html><body><script>const msg = "hi"; document.body.textContent = msg;</script></body></html>',
+              },
+            }],
+          },
+        ],
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    vi.restoreAllMocks();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  }, 60000);
+
+  it('retries once on a frontend.html syntax error and succeeds with the corrected content', async () => {
+    const taskId = randomUUID();
+    const payload = { productId, proposalId: randomUUID() };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'coder', payload, status: 'pending' });
+    await publishTask(nc, 'coder', { taskId, role: 'coder', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(['done', 'failed']).toContain(row?.status);
+    }, { timeout: 60000 });
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    expect(row?.status).toBe('done');
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    expect(events.some((e) => e.eventType === 'compile_failed')).toBe(false);
+
+    const codeGenerated = events.find((e) => e.eventType === 'code_generated');
+    const files = (codeGenerated?.payload as { files: Array<{ path: string; content: string }> }).files;
+    const frontendFiles = files.filter((f) => f.path === 'frontend.html');
+    // Deduplicated: exactly one entry, holding the *corrected* content, not the original bad one.
+    expect(frontendFiles).toHaveLength(1);
+    expect(frontendFiles[0]?.content).not.toContain(' as string');
+  }, 75000);
+});
+
+describe('CoderAgent frontend-syntax failure after retry', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: CoderAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'coder');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'retry-frontend-fail-api', description: 'says hello', status: 'proposed' });
+    await db.insert(architectureProposals).values({
+      id: randomUUID(),
+      productId,
+      serviceName: 'retry-frontend-fail-api',
+      summary: 'Responds with a greeting. Frontend: a page showing the greeting.',
+      endpoints: [{ method: 'GET', path: '/hello' }],
+      dataModel: {},
+    });
+
+    agent = new CoderAgent({
+      db, redis, nc, instanceId: 'test-coder-frontend-fail',
+      // The mock model's script is finite (exactly the 2 rounds this test needs for the
+      // in-process retry loop under test). Without capping maxDeliver at 1, a genuine final
+      // failure here still naks (deliveryCount 1 < the framework's default maxDeliver of 5) and
+      // NATS redelivers the whole task - which would call generateAndCompile a second time
+      // against a mock model that has already exhausted every scripted round, and against a
+      // product directory that still holds the *previous* delivery's real on-disk files (nothing
+      // deletes them on failure). That combination makes the redelivered attempt spuriously
+      // "succeed" - checks against an empty in-memory writtenFiles array trivially pass, and
+      // `tsc` compiles the stale-but-valid index.ts left on disk from delivery 1 - which is a
+      // NATS-redelivery/stale-disk interaction orthogonal to what this test verifies (the local
+      // retry-loop's own control flow). maxDeliver: 1 isolates that: this delivery's failure is
+      // final, matching what "fails after both attempts" is actually testing.
+      maxDeliver: 1,
+      model: createMockModel({
+        rounds: [
+          {
+            toolCalls: [
+              {
+                toolName: 'write_file',
+                input: {
+                  path: 'index.ts',
+                  content:
+                    "import Fastify from 'fastify';\n" +
+                    "const app = Fastify();\n" +
+                    "app.get('/hello', async () => ({ message: 'hello' }));\n" +
+                    "app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });\n",
+                },
+              },
+              { toolName: 'write_file', input: { path: 'frontend.html', content: '<script>const a = 1 as number;</script>' } },
+            ],
+          },
+          {
+            toolCalls: [
+              { toolName: 'write_file', input: { path: 'frontend.html', content: '<script>const b = 2 as number;</script>' } },
+            ],
+          },
+        ],
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    vi.restoreAllMocks();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  }, 30000);
+
+  it('fails the task after both attempts still have a frontend.html syntax error', async () => {
+    const taskId = randomUUID();
+    const payload = { productId, proposalId: randomUUID() };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'coder', payload, status: 'pending' });
+    await publishTask(nc, 'coder', { taskId, role: 'coder', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(['done', 'failed']).toContain(row?.status);
+    }, { timeout: 20000 });
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    expect(row?.status).toBe('failed');
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    expect(events.some((e) => e.eventType === 'code_generated')).toBe(false);
+
+    const failedEvent = events.find((e) => e.eventType === 'compile_failed');
+    expect(failedEvent).toBeDefined();
+    const eventPayload = failedEvent?.payload as { stage: string; attempts: unknown[] };
+    expect(eventPayload.stage).toBe('frontend-syntax');
+    expect(eventPayload.attempts).toHaveLength(2);
+  }, 25000);
+});
+
+describe('CoderAgent backend-tsc retry', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: CoderAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'coder');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'retry-backend-api', description: 'says hello', status: 'proposed' });
+    await db.insert(architectureProposals).values({
+      id: randomUUID(),
+      productId,
+      serviceName: 'retry-backend-api',
+      summary: 'Responds with a greeting.',
+      endpoints: [{ method: 'GET', path: '/hello' }],
+      dataModel: {},
+    });
+
+    agent = new CoderAgent({
+      db, redis, nc, instanceId: 'test-coder-backend-retry',
+      model: createMockModel({
+        rounds: [
+          {
+            toolCalls: [{
+              toolName: 'write_file',
+              input: {
+                path: 'index.ts',
+                content:
+                  "import Fastify from 'fastify';\n" +
+                  "const app = Fastify();\n" +
+                  // Intentional TS2322 under strict mode: assigning a string to a `number`.
+                  "const port: number = 'not-a-number';\n" +
+                  "app.get('/hello', async () => ({ message: 'hello' }));\n" +
+                  "app.listen({ port, host: '0.0.0.0' });\n",
+              },
+            }],
+          },
+          {
+            toolCalls: [{
+              toolName: 'write_file',
+              input: {
+                path: 'index.ts',
+                content:
+                  "import Fastify from 'fastify';\n" +
+                  "const app = Fastify();\n" +
+                  "app.get('/hello', async () => ({ message: 'hello' }));\n" +
+                  "app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });\n",
+              },
+            }],
+          },
+        ],
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    vi.restoreAllMocks();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  }, 60000);
+
+  it('retries once on a backend tsc failure and succeeds with the corrected file', async () => {
+    const taskId = randomUUID();
+    const payload = { productId, proposalId: randomUUID() };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'coder', payload, status: 'pending' });
+    await publishTask(nc, 'coder', { taskId, role: 'coder', payload });
+
+    // Two real `pnpm install && tsc --noEmit` round trips (attempt 1 fails, attempt 2 passes) -
+    // the existing single-compile test in this file measured ~19-45s for one; budget generously
+    // for two plus the rest of the task pipeline.
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(['done', 'failed']).toContain(row?.status);
+    }, { timeout: 100000 });
+
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+    expect(row?.status).toBe('done');
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    expect(events.some((e) => e.eventType === 'compile_failed')).toBe(false);
+
+    const codeGenerated = events.find((e) => e.eventType === 'code_generated');
+    const files = (codeGenerated?.payload as { files: Array<{ path: string; content: string }> }).files;
+    expect(files.find((f) => f.path === 'index.ts')?.content).toContain('Number(process.env.PORT');
+  }, 110000);
+});
+
 /**
  * Clears all JetStream state for one role: drops its durable consumer (resetting delivery
  * counts) and purges any messages still sitting on its subject. Both outlive the test process -

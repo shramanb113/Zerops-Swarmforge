@@ -8,6 +8,7 @@ import {
   products, architectureProposals, taskEvents, and, eq,
 } from '@swarmforge/agent-framework';
 import { scaffoldProduct } from './product-template.js';
+import { checkFrontendSyntax } from './frontend-syntax-check.js';
 
 const execAsync = promisify(exec);
 
@@ -22,6 +23,8 @@ type CoderDeps = Omit<ZeropsAgentDeps, 'role'> & {
   model?: Parameters<typeof createAgent>[0]['model'];
   controlPlaneUrl?: string;
 };
+
+type CheckResult = { ok: true } | { ok: false; stage: 'frontend-syntax' | 'backend-tsc'; output: string };
 
 export class CoderAgent extends ZeropsAgent {
   private readonly controlPlaneUrl: string;
@@ -130,24 +133,51 @@ export class CoderAgent extends ZeropsAgent {
 
     await this.db.update(products).set({ status: 'coding', updatedAt: new Date() }).where(eq(products.id, productId));
 
-    const compileResult = await this.compileCheck(productDir);
-    if (!compileResult.ok) {
+    const attempts: Array<{ stage: 'frontend-syntax' | 'backend-tsc'; output: string }> = [];
+    let check = await this.runChecks(productDir, writtenFiles);
+    if (!check.ok) {
+      attempts.push({ stage: check.stage, output: check.output });
+      const checkName = check.stage === 'frontend-syntax'
+        ? 'frontend.html <script> syntax check'
+        : 'backend `tsc --noEmit` compile check';
+      await agent.generate(
+        `Your previous attempt failed the ${checkName}:\n\n${check.output}\n\n` +
+          'Fix this now by calling write_file again for the affected file with corrected content.',
+      );
+      check = await this.runChecks(productDir, writtenFiles);
+      if (!check.ok) attempts.push({ stage: check.stage, output: check.output });
+    }
+
+    if (!check.ok) {
       await this.db.update(products).set({ status: 'failed', updatedAt: new Date() }).where(eq(products.id, productId));
       await this.db.insert(taskEvents).values({
         taskId,
         role: 'coder',
         eventType: 'compile_failed',
-        payload: { output: compileResult.output },
+        payload: { stage: check.stage, output: check.output, attempts },
       });
-      throw new Error(`generated product ${productId} failed to compile:\n${compileResult.output}`);
+      throw new Error(`generated product ${productId} failed to compile:\n${check.output}`);
     }
 
     await this.db.insert(taskEvents).values({
       taskId,
       role: 'coder',
       eventType: 'code_generated',
-      payload: { files: writtenFiles },
+      payload: { files: dedupeByPath(writtenFiles) },
     });
+  }
+
+  private async runChecks(
+    productDir: string,
+    writtenFiles: Array<{ path: string; content: string }>,
+  ): Promise<CheckResult> {
+    const frontendResult = checkFrontendSyntax(writtenFiles);
+    if (!frontendResult.ok) return { ok: false, stage: 'frontend-syntax', output: frontendResult.output };
+
+    const compileResult = await this.compileCheck(productDir);
+    if (!compileResult.ok) return { ok: false, stage: 'backend-tsc', output: compileResult.output };
+
+    return { ok: true };
   }
 
   private buildWriteFileTool(productDir: string, writtenFiles: Array<{ path: string; content: string }>) {
@@ -232,4 +262,18 @@ export class CoderAgent extends ZeropsAgent {
 function normalizeSrcRelativePath(inputPath: string): string {
   const unix = inputPath.replace(/\\/g, '/').replace(/^\.\//, '');
   return unix.replace(/^\/?src\//, '');
+}
+
+/**
+ * Collapses `writtenFiles` to the latest content per path. A retry attempt calls `write_file`
+ * again for whichever file failed a check, appending a second entry for the same path rather
+ * than replacing the first - without this, `code_generated` would report two versions of the
+ * same file, and the dashboard's file tree/preview would show the pre-fix (broken) content.
+ */
+export function dedupeByPath(
+  files: Array<{ path: string; content: string }>,
+): Array<{ path: string; content: string }> {
+  const latest = new Map<string, string>();
+  for (const file of files) latest.set(file.path, file.content);
+  return [...latest.entries()].map(([path, content]) => ({ path, content }));
 }
