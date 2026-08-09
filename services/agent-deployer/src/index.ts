@@ -1,30 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { createDb, connectQueue, ensureStream } from '@swarmforge/agent-framework';
-import { ArchitectAgent } from './architect-agent.js';
+import { DeployerAgent } from './deployer-agent.js';
 
 async function main(): Promise<void> {
   const databaseUrl = requireEnv('DATABASE_URL');
   const natsUrl = requireEnv('NATS_URL');
   const valkeyUrl = requireEnv('VALKEY_URL');
-  requireEnv('GROQ_API_KEY'); // read by Mastra's model router directly from process.env
+  requireEnv('GROQ_API_KEY');
 
   const db = await createDb(databaseUrl);
   const nc = await connectQueue(natsUrl);
   await ensureStream(nc);
   const redis = new Redis(valkeyUrl);
-  // ioredis emits 'error' on connection failures. An EventEmitter with no 'error' listener
-  // throws, so without this a Valkey blip would crash the process.
   redis.on('error', (err) => console.error('[valkey] connection error:', err));
 
-  const instanceId = randomUUID();
-  const agent = new ArchitectAgent({ db, redis, nc, instanceId });
+  const agent = new DeployerAgent({ db, redis, nc, instanceId: randomUUID() });
   await agent.start();
-  // Log only the instance id, never the agent object itself — it holds live `db`/`redis`
-  // clients whose config (including the Postgres password) is reachable as ordinary
-  // enumerable properties at runtime, since TypeScript's `private`/`protected` modifiers
-  // are compile-time only.
-  console.log('[agent-architect] started, instance', instanceId);
+  console.log(`[agent-deployer] started, DEPLOY_DRY_RUN=${process.env.DEPLOY_DRY_RUN !== 'false'}`);
 
   process.on('SIGTERM', () => void agent.stop());
 }

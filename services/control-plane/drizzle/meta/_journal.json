@@ -8,6 +8,13 @@
       "when": 1785908271420,
       "tag": "0000_careless_paibok",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786027676357,
+      "tag": "0001_big_swordsman",
+      "breakpoints": true
     }
   ]
 }

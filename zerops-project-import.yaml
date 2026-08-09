@@ -21,3 +21,9 @@ services:
 
   - hostname: agent-architect
     type: ubuntu/nodejs@22
+
+  - hostname: agent-coder
+    type: ubuntu/nodejs@22
+
+  - hostname: agent-deployer
+    type: ubuntu/nodejs@22
