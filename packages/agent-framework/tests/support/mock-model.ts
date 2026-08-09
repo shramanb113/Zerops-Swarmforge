@@ -30,6 +30,18 @@ export interface ScriptedToolCall {
   input: unknown;
 }
 
+/**
+ * One `agent.generate()` call's worth of scripted model behavior. If `toolCalls` is set, the
+ * mock emits all of them in a single response (matching how a real model can request several
+ * tool calls at once — see the Deployer's three-tool-call round), then a follow-up text
+ * response (`text`, default `'done'`) once Mastra's agent loop asks for the turn's final text
+ * after executing them. If `toolCalls` is omitted, the round is just the text response.
+ */
+export interface MockModelRound {
+  toolCalls?: ScriptedToolCall[];
+  text?: string;
+}
+
 export interface MockModelResponse {
   text?: string;
   /** JSON-stringified structured output, for agents using structuredOutput */
@@ -39,14 +51,45 @@ export interface MockModelResponse {
    * on every subsequent call. Needed for any agent that must actually exercise a tool's
    * `execute()` (Coder, Deployer) - a text-only mock never triggers a tool call, so a tool's
    * side effects (writing a file, etc.) silently never happen and any test asserting on them
-   * would be exercising nothing.
+   * would be exercising nothing. Equivalent to `rounds: [{ toolCalls }]` below - kept as its
+   * own field since every existing caller uses this single-round shorthand.
    */
   toolCalls?: ScriptedToolCall[];
+  /**
+   * Scripts a *different* response for each successive `agent.generate()` call - needed to
+   * test a retry loop, where attempt 1 must fail a check and attempt 2 must pass it. Each
+   * element is one `generate()` call's worth of behavior (see `MockModelRound`). Once every
+   * round has been consumed, further calls keep repeating the last round's response rather
+   * than erroring. Mutually exclusive with `text`/`object`/`toolCalls` above - when `rounds`
+   * is set, those three are ignored.
+   */
+  rounds?: MockModelRound[];
+}
+
+type Step =
+  | { kind: 'toolCalls'; calls: ScriptedToolCall[] }
+  | { kind: 'text'; text: string };
+
+function expandRounds(rounds: MockModelRound[]): Step[] {
+  const steps: Step[] = [];
+  for (const round of rounds) {
+    if (round.toolCalls && round.toolCalls.length > 0) {
+      steps.push({ kind: 'toolCalls', calls: round.toolCalls });
+    }
+    steps.push({ kind: 'text', text: round.text ?? 'done' });
+  }
+  return steps;
 }
 
 export function createMockModel(response: MockModelResponse): MockLanguageModelV1 {
-  const finalText = response.object !== undefined ? JSON.stringify(response.object) : (response.text ?? 'done');
-  let callCount = 0;
+  const steps = response.rounds
+    ? expandRounds(response.rounds)
+    : expandRounds([{
+        toolCalls: response.toolCalls,
+        text: response.object !== undefined ? JSON.stringify(response.object) : (response.text ?? 'done'),
+      }]);
+  let stepIndex = 0;
+
   return new MockLanguageModelV1({
     // Only set for structured-output responses: `agent.generate(prompt, { output: schema })`
     // calls the AI SDK's `generateObject()`, which throws "Model does not have a default
@@ -54,14 +97,18 @@ export function createMockModel(response: MockModelResponse): MockLanguageModelV
     // returns its structured payload — as a JSON-stringified `text`, not a tool call.
     defaultObjectGenerationMode: response.object !== undefined ? 'json' : undefined,
     doGenerate: async () => {
-      callCount += 1;
-      if (response.toolCalls && response.toolCalls.length > 0 && callCount === 1) {
+      // Steps beyond the scripted ones keep repeating the last step, matching the pre-`rounds`
+      // behavior of "plain text forever" once past round 1 - a caller that doesn't care about
+      // calls past the ones it scripted doesn't need to reason about it.
+      const step = steps[Math.min(stepIndex, steps.length - 1)];
+      stepIndex += 1;
+      if (step.kind === 'toolCalls') {
         return {
           finishReason: 'tool-calls',
           usage: { promptTokens: 0, completionTokens: 0 },
-          toolCalls: response.toolCalls.map((call, i) => ({
+          toolCalls: step.calls.map((call, i) => ({
             toolCallType: 'function' as const,
-            toolCallId: `mock-call-${i}`,
+            toolCallId: `mock-call-${stepIndex}-${i}`,
             toolName: call.toolName,
             args: JSON.stringify(call.input),
           })),
@@ -72,7 +119,7 @@ export function createMockModel(response: MockModelResponse): MockLanguageModelV
       return {
         finishReason: 'stop',
         usage: { promptTokens: 0, completionTokens: 0 },
-        text: finalText,
+        text: step.text,
         rawCall: { rawPrompt: null, rawSettings: {} },
         warnings: [],
       };

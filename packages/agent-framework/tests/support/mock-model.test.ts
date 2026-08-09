@@ -38,4 +38,46 @@ describe('createMockModel', () => {
     await agent.generate('anything');
     expect(receivedInput).toEqual({ note: 'hi' });
   });
+
+  it('scripts a different tool call on each successive agent.generate() call (rounds)', async () => {
+    const received: string[] = [];
+    const noteTool = {
+      id: 'take_note',
+      description: 'Records a note.',
+      inputSchema: z.object({ note: z.string() }),
+      outputSchema: z.object({ recorded: z.boolean() }),
+      execute: async ({ context }: { context: { note: string } }) => {
+        received.push(context.note);
+        return { recorded: true };
+      },
+    };
+
+    const agent = new Agent({
+      name: 'rounds-mock-test',
+      instructions: 'test',
+      model: createMockModel({
+        rounds: [
+          { toolCalls: [{ toolName: 'take_note', input: { note: 'first' } }] },
+          { toolCalls: [{ toolName: 'take_note', input: { note: 'second' } }] },
+        ],
+      }),
+      tools: { take_note: noteTool },
+    });
+
+    await agent.generate('go');
+    await agent.generate('go again');
+
+    expect(received).toEqual(['first', 'second']);
+  });
+
+  it('repeats the last scripted round for any call beyond the ones provided', async () => {
+    const model = createMockModel({ rounds: [{ text: 'round one' }, { text: 'round two' }] });
+    const agent = new Agent({ name: 'rounds-repeat-test', instructions: 'test', model });
+
+    const r1 = await agent.generate('a');
+    const r2 = await agent.generate('b');
+    const r3 = await agent.generate('c');
+
+    expect([r1.text, r2.text, r3.text]).toEqual(['round one', 'round two', 'round two']);
+  });
 });
