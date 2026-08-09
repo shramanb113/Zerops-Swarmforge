@@ -4,7 +4,11 @@ async function main(): Promise<void> {
   const createResponse = await fetch(`${CONTROL_PLANE_URL}/tasks`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ type: 'smoke-test', role: 'architect', payload: { note: 'foundation smoke test' } }),
+    body: JSON.stringify({
+      type: 'build-product',
+      role: 'architect',
+      payload: { description: 'A simple REST API that returns a random inspirational quote.' },
+    }),
   });
 
   if (createResponse.status !== 201) {
@@ -12,35 +16,51 @@ async function main(): Promise<void> {
   }
 
   const { id } = (await createResponse.json()) as { id: string };
-  console.log(`created task ${id}, polling /world-state for completion...`);
+  console.log(`created architect task ${id}, polling /world-state for the full pipeline to complete...`);
 
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 120_000; // Groq round-trips x3 + a real pnpm install/tsc, needs real wall time
   while (Date.now() < deadline) {
     const stateResponse = await fetch(`${CONTROL_PLANE_URL}/world-state`);
     const state = (await stateResponse.json()) as {
       tasks: Array<{ id: string; status: string }>;
-      events: Array<{ taskId: string; eventType: string }>;
+      events: Array<{ taskId: string; eventType: string; payload: unknown }>;
+      products: Array<{ id: string; status: string; name: string }>;
     };
-    const task = state.tasks.find((t) => t.id === id);
-    if (task?.status === 'done') {
-      console.log('task completed successfully');
-      const completedEvent = state.events.some((e) => e.taskId === id && e.eventType === 'task_completed');
-      if (!completedEvent) {
-        throw new Error('expected a task_completed event for the created task');
+
+    const architectTask = state.tasks.find((t) => t.id === id);
+    if (architectTask?.status === 'failed') {
+      throw new Error('architect task failed - check task_events for details');
+    }
+
+    const product = state.products.find((p) => p.status === 'deployed' || p.status === 'failed');
+    if (product?.status === 'failed') {
+      throw new Error(`product ${product.id} reached status "failed" - check task_events for compile output`);
+    }
+    if (product?.status === 'deployed') {
+      console.log(`product "${product.name}" (${product.id}) reached status "deployed"`);
+
+      const deployEvent = state.events.find((e) => e.eventType === 'deploy_recorded');
+      const dryRun = (deployEvent?.payload as { dryRun?: boolean } | undefined)?.dryRun;
+      if (dryRun !== true) {
+        throw new Error(`expected the deploy to be a dry run (dryRun: true), got: ${JSON.stringify(deployEvent?.payload)}`);
       }
-      console.log('task_events check passed: task_completed event recorded');
+      console.log('dry-run check passed: no real zcli command was executed');
+
       const presenceResponse = await fetch(`${CONTROL_PLANE_URL}/presence`);
       const presence = (await presenceResponse.json()) as { agents: Array<{ role: string }> };
-      if (!presence.agents.some((a) => a.role === 'architect')) {
-        throw new Error('expected an architect agent to be present');
+      for (const role of ['architect', 'coder', 'deployer']) {
+        if (!presence.agents.some((a) => a.role === role)) {
+          throw new Error(`expected a ${role} agent to be present`);
+        }
       }
-      console.log('presence check passed: architect is online');
+      console.log('presence check passed: architect, coder, and deployer are all online');
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  throw new Error(`task ${id} did not reach status "done" within 15s`);
+  throw new Error('pipeline did not reach a terminal product status within 120s');
 }
 
 main()
