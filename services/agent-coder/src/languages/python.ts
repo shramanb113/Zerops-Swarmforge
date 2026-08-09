@@ -102,6 +102,11 @@ export const pythonProfile: CoderLanguageProfile = {
       'not rely on an external `uvicorn main:app` invocation, so the file runs standalone as ' +
       '`python src/main.py` regardless of working directory. Only "fastapi" and "uvicorn" are ' +
       'installed - do not import any other third-party package.\n' +
+      'Also add a GET "/" route returning fastapi.responses.HTMLResponse of the contents of ' +
+      '"frontend.html", which sits next to this file - read it with ' +
+      '(pathlib.Path(__file__).parent / "frontend.html").read_text() so it resolves correctly ' +
+      'regardless of working directory. This is what makes the UI reachable at the deployed ' +
+      "service's own root URL.\n" +
       'Do not write requirements.txt; it already exists.\n';
   },
 

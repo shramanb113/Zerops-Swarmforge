@@ -60,6 +60,13 @@ export const typescriptProfile: CoderLanguageProfile = {
       'The project compiles with `tsc --noEmit` under "strict": true and "moduleResolution": ' +
       '"NodeNext", so every relative import between your own .ts files MUST carry an explicit ' +
       '".js" extension (e.g. import { x } from "./routes.js").\n' +
+      'Also add a GET "/" route returning the contents of "frontend.html", which sits next to ' +
+      'this file, as text/html - read it with ' +
+      'readFileSync(path.join(process.cwd(), "src", "frontend.html"), "utf-8") (import both ' +
+      '"node:fs" and "node:path") rather than a path built from import.meta.url, since the ' +
+      'compiled file runs from dist/ but this always runs from the service\'s own working ' +
+      "directory. This is what makes the UI reachable at the deployed service's own root " +
+      'URL.\n' +
       'Only "fastify" and "@types/node" are installed - do not import any other package.\n' +
       'Do not write package.json or tsconfig.json; they already exist.\n';
   },

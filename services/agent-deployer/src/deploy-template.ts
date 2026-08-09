@@ -14,7 +14,9 @@ const DEPLOYER_LANGUAGE_PROFILES: Partial<Record<Language, (hostname: string) =>
   typescript: () => ({
     baseImage: 'ubuntu/nodejs@22',
     buildCommands: ['corepack enable', 'pnpm install', 'pnpm build'],
-    deployFiles: ['dist', 'package.json', 'node_modules'],
+    // 'src/frontend.html' alongside 'dist': tsc only compiles .ts -> dist/, it never copies
+    // frontend.html there, but index.ts's GET "/" route reads it from src/ at runtime.
+    deployFiles: ['dist', 'src/frontend.html', 'package.json', 'node_modules'],
     runStart: 'node dist/index.js',
   }),
   python: () => ({
