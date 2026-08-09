@@ -443,6 +443,114 @@ describe('CoderAgent backend-tsc retry', () => {
   }, 110000);
 });
 
+describe('CoderAgent compile_failed idempotency guard', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: CoderAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'coder');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'guard-compile-fail-api', description: 'says hello', status: 'proposed' });
+    await db.insert(architectureProposals).values({
+      id: randomUUID(),
+      productId,
+      serviceName: 'guard-compile-fail-api',
+      summary: 'Responds with a greeting.',
+      endpoints: [{ method: 'GET', path: '/hello' }],
+      dataModel: {},
+    });
+
+    agent = new CoderAgent({
+      db, redis, nc, instanceId: 'test-coder-guard',
+      // A genuine redelivery of a task whose final verdict was already `compile_failed` must
+      // never reach the model at all - if the guard is broken, this mock would happily write a
+      // valid index.ts and frontend.html and the task would spuriously succeed instead of
+      // staying failed, which is exactly the bug this guard exists to prevent.
+      model: createMockModel({
+        toolCalls: [
+          {
+            toolName: 'write_file',
+            input: {
+              path: 'index.ts',
+              content:
+                "import Fastify from 'fastify';\n" +
+                "const app = Fastify();\n" +
+                "app.get('/hello', async () => ({ message: 'hello' }));\n" +
+                "app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });\n",
+            },
+          },
+        ],
+      }),
+      // Isolates this test to a single delivery attempt, same rationale as the "failure after
+      // retry" describe blocks above: without this, NATS would redeliver up to the default
+      // maxDeliver (5) with exponential backoff before landing on `failed`, which the guard
+      // itself already makes redundant (every redelivery would throw immediately) but which
+      // would still slow this test down to no purpose.
+      maxDeliver: 1,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: randomUUID(), status: 'pending' }), { status: 201 }),
+    );
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    vi.restoreAllMocks();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  }, 30000);
+
+  it('re-throws immediately on a task that already has a compile_failed event, without regenerating', async () => {
+    const taskId = randomUUID();
+    const payload = { productId, proposalId: randomUUID() };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'coder', payload, status: 'pending' });
+    // Simulates a redelivery of a task whose in-onTask retry loop already exhausted both compile
+    // attempts on a prior delivery: that delivery would have recorded exactly this event before
+    // throwing. We insert it directly rather than driving a real failing compile through the
+    // pipeline (which the other "failure after retry" describe block above already covers) -
+    // this test only needs to prove that a *second* onTask call, seeing this event already on
+    // record, skips straight to re-throwing.
+    await db.insert(taskEvents).values({
+      taskId,
+      role: 'coder',
+      eventType: 'compile_failed',
+      payload: { stage: 'frontend-syntax', output: 'stale failure from a prior delivery', attempts: [] },
+    });
+    await publishTask(nc, 'coder', { taskId, role: 'coder', payload });
+
+    // A real generate-and-compile round trip (this file's other describe blocks) takes 19s+ even
+    // on a clean pass. A short timeout here is itself evidence the guard fired immediately
+    // instead of redoing the work: if it regressed to calling generateAndCompile again, this
+    // would either time out or take much longer.
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('failed');
+    }, { timeout: 5000 });
+
+    // No product directory was ever created - generateAndCompile (and its scaffoldProduct call)
+    // never ran.
+    expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'src'))).toBe(false);
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    // Exactly the one `compile_failed` event this test inserted itself - not a second, duplicate
+    // one from a redone (and re-failed) generate-and-compile pass.
+    expect(events.filter((e) => e.eventType === 'compile_failed')).toHaveLength(1);
+    expect(events.some((e) => e.eventType === 'code_generated')).toBe(false);
+    // The handoff-to-deployer POST is never reached either, since the guard throws before it.
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  }, 10000);
+});
+
 /**
  * Clears all JetStream state for one role: drops its durable consumer (resetting delivery
  * counts) and purges any messages still sitting on its subject. Both outlive the test process -

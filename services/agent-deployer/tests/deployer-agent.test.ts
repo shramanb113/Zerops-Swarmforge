@@ -92,11 +92,14 @@ describe('DeployerAgent', () => {
     const deployEvent = events.find((e) => e.eventType === 'deploy_recorded');
     expect((deployEvent?.payload as { dryRun: boolean }).dryRun).toBe(true);
 
-    // The recorded commands must be real zcli invocations. `service-import` is nested under
-    // `project`; `push` is top-level. Blanket-prefixing every command with 'project' used to
-    // record `zcli project push hello-api`, which is not a command zcli has.
+    // The recorded commands must be real zcli invocations, with write_deploy_config first (the
+    // step that actually writes zerops.yaml/zerops-service-import.yaml, which the two zcli
+    // commands below depend on existing). `service-import` is nested under `project`; `push` is
+    // top-level. Blanket-prefixing every command with 'project' used to record
+    // `zcli project push hello-api`, which is not a command zcli has.
     const commands = (deployEvent?.payload as { commands: string[] }).commands;
     expect(commands).toEqual([
+      'write_deploy_config',
       'zcli project service-import zerops-service-import.yaml',
       'zcli push hello-api',
     ]);
@@ -126,14 +129,19 @@ describe('DeployerAgent sequence retry', () => {
       model: createMockModel({
         rounds: [
           {
-            // Wrong order: push before service-import.
+            // Wrong order: write_deploy_config is correct, but the two zcli calls are reversed
+            // (push before service-import).
             toolCalls: [
               { toolName: 'write_deploy_config', input: { hostname: 'retry-deploy-api' } },
               { toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-api'] } },
+              { toolName: 'run_zcli', input: { command: 'service-import', args: ['zerops-service-import.yaml'] } },
             ],
           },
           {
+            // Corrected: `commands` was cleared before this retry, so all three calls (including
+            // write_deploy_config) must be repeated in the right order for the check to pass.
             toolCalls: [
+              { toolName: 'write_deploy_config', input: { hostname: 'retry-deploy-api' } },
               { toolName: 'run_zcli', input: { command: 'service-import', args: ['zerops-service-import.yaml'] } },
               { toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-api'] } },
             ],
@@ -172,6 +180,7 @@ describe('DeployerAgent sequence retry', () => {
     expect((deployEvent?.payload as { attempts: number }).attempts).toBe(2);
     const commands = (deployEvent?.payload as { commands: string[] }).commands;
     expect(commands).toEqual([
+      'write_deploy_config',
       'zcli project service-import zerops-service-import.yaml',
       'zcli push retry-deploy-api',
     ]);
@@ -214,7 +223,9 @@ describe('DeployerAgent sequence failure after retry', () => {
         rounds: [
           // Missing both run_zcli calls entirely.
           { toolCalls: [{ toolName: 'write_deploy_config', input: { hostname: 'retry-deploy-fail-api' } }] },
-          // Still wrong: only `push`, missing `service-import`.
+          // Still wrong: only `push`, missing both `write_deploy_config` and `service-import`
+          // (`commands` was cleared before this retry, so write_deploy_config from round 1 no
+          // longer counts).
           { toolCalls: [{ toolName: 'run_zcli', input: { command: 'push', args: ['retry-deploy-fail-api'] } }] },
         ],
       }),
@@ -250,6 +261,88 @@ describe('DeployerAgent sequence failure after retry', () => {
     expect(invalidEvent).toBeDefined();
     expect((invalidEvent?.payload as { attempts: unknown[] }).attempts).toHaveLength(2);
   }, 20000);
+});
+
+describe('DeployerAgent deploy_sequence_invalid idempotency guard', () => {
+  let db: Db;
+  let nc: NatsConnection;
+  let redis: Redis;
+  let agent: DeployerAgent;
+  let productId: string;
+
+  beforeAll(async () => {
+    db = await createDb(DB_URL);
+    nc = await connectQueue(NATS_URL);
+    await ensureStream(nc);
+    await resetRole(nc, 'deployer');
+    redis = new Redis(REDIS_URL);
+
+    productId = randomUUID();
+    await db.insert(products).values({ id: productId, name: 'guard-deploy-fail-api', description: 'says hello', status: 'coding' });
+    await mkdir(path.join(PRODUCTS_ROOT, productId), { recursive: true });
+
+    agent = new DeployerAgent({
+      db, redis, nc, instanceId: 'test-deployer-guard',
+      // A genuine redelivery of a task whose final verdict was already `deploy_sequence_invalid`
+      // must never reach the model at all - if the guard is broken, this mock would happily make
+      // the correct three tool calls and the task would spuriously succeed instead of staying
+      // failed, which is exactly the bug this guard exists to prevent.
+      model: createMockModel({
+        toolCalls: [
+          { toolName: 'write_deploy_config', input: { hostname: 'guard-deploy-fail-api' } },
+          { toolName: 'run_zcli', input: { command: 'service-import', args: ['zerops-service-import.yaml'] } },
+          { toolName: 'run_zcli', input: { command: 'push', args: ['guard-deploy-fail-api'] } },
+        ],
+      }),
+      // Isolates this test to a single delivery attempt, same rationale as "DeployerAgent
+      // sequence failure after retry" above: without this, NATS would redeliver up to the
+      // default maxDeliver (5) with exponential backoff before landing on `failed`, which the
+      // guard itself already makes redundant (every redelivery would throw immediately) but
+      // which would still slow this test down to no purpose.
+      maxDeliver: 1,
+    });
+    await agent.start();
+  });
+
+  afterAll(async () => {
+    await agent.stop();
+    await redis.quit();
+    await nc.close();
+    await rm(path.join(PRODUCTS_ROOT, productId), { recursive: true, force: true });
+  });
+
+  it('re-throws immediately on a task that already has a deploy_sequence_invalid event, without retrying', async () => {
+    const taskId = randomUUID();
+    const payload = { productId };
+    await db.insert(tasks).values({ id: taskId, type: 'build-product', role: 'deployer', payload, status: 'pending' });
+    // Simulates a redelivery of a task whose in-onTask retry loop already exhausted both
+    // tool-call attempts on a prior delivery: that delivery would have recorded exactly this
+    // event before throwing. We insert it directly rather than driving a real failing sequence
+    // through the pipeline (which "DeployerAgent sequence failure after retry" above already
+    // covers) - this test only needs to prove that a *second* onTask call, seeing this event
+    // already on record, skips straight to re-throwing.
+    await db.insert(taskEvents).values({
+      taskId,
+      role: 'deployer',
+      eventType: 'deploy_sequence_invalid',
+      payload: { attempts: [{ ok: false, commands: [] }, { ok: false, commands: [] }] },
+    });
+    await publishTask(nc, 'deployer', { taskId, role: 'deployer', payload });
+
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.status).toBe('failed');
+    }, { timeout: 5000 });
+
+    // zerops.yaml was never written - the agent never even attempted a new tool-call sequence.
+    expect(existsSync(path.join(PRODUCTS_ROOT, productId, 'zerops.yaml'))).toBe(false);
+
+    const events = await db.select().from(taskEvents).where(eq(taskEvents.taskId, taskId));
+    // Exactly the one `deploy_sequence_invalid` event this test inserted itself - not a second,
+    // duplicate one from a redone (and re-failed) retry loop.
+    expect(events.filter((e) => e.eventType === 'deploy_sequence_invalid')).toHaveLength(1);
+    expect(events.some((e) => e.eventType === 'deploy_recorded')).toBe(false);
+  }, 10000);
 });
 
 /**

@@ -4,20 +4,35 @@ import { validateDeploySequence } from '../src/deploy-sequence-check.js';
 describe('validateDeploySequence', () => {
   it('passes the exact expected sequence', () => {
     const result = validateDeploySequence(
-      ['zcli project service-import zerops-service-import.yaml', 'zcli push hello-api'],
+      ['write_deploy_config', 'zcli project service-import zerops-service-import.yaml', 'zcli push hello-api'],
       'hello-api',
     );
     expect(result.ok).toBe(true);
   });
 
+  it('fails when write_deploy_config is missing', () => {
+    const result = validateDeploySequence(
+      ['zcli project service-import zerops-service-import.yaml', 'zcli push hello-api'],
+      'hello-api',
+    );
+    expect(result.ok).toBe(false);
+  });
+
   it('fails when push is missing', () => {
-    const result = validateDeploySequence(['zcli project service-import zerops-service-import.yaml'], 'hello-api');
+    const result = validateDeploySequence(
+      ['write_deploy_config', 'zcli project service-import zerops-service-import.yaml'],
+      'hello-api',
+    );
     expect(result.ok).toBe(false);
   });
 
   it('fails when the order is reversed', () => {
     const result = validateDeploySequence(
-      ['zcli push hello-api', 'zcli project service-import zerops-service-import.yaml'],
+      [
+        'zcli push hello-api',
+        'zcli project service-import zerops-service-import.yaml',
+        'write_deploy_config',
+      ],
       'hello-api',
     );
     expect(result.ok).toBe(false);
@@ -25,7 +40,7 @@ describe('validateDeploySequence', () => {
 
   it('fails when the hostname in the push command does not match', () => {
     const result = validateDeploySequence(
-      ['zcli project service-import zerops-service-import.yaml', 'zcli push wrong-name'],
+      ['write_deploy_config', 'zcli project service-import zerops-service-import.yaml', 'zcli push wrong-name'],
       'hello-api',
     );
     expect(result.ok).toBe(false);
@@ -34,6 +49,7 @@ describe('validateDeploySequence', () => {
   it('fails on an extra, unexpected command', () => {
     const result = validateDeploySequence(
       [
+        'write_deploy_config',
         'zcli project service-import zerops-service-import.yaml',
         'zcli push hello-api',
         'zcli push hello-api',
@@ -47,6 +63,7 @@ describe('validateDeploySequence', () => {
     const result = validateDeploySequence(['zcli push hello-api'], 'hello-api');
     if (!result.ok) {
       expect(result.expected).toEqual([
+        'write_deploy_config',
         'zcli project service-import zerops-service-import.yaml',
         'zcli push hello-api',
       ]);

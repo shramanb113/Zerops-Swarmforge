@@ -39,6 +39,21 @@ export class DeployerAgent extends ZeropsAgent {
     const [product] = await this.db.select().from(products).where(eq(products.id, productId));
     if (!product) throw new Error(`product ${productId} not found`);
 
+    // A `deploy_sequence_invalid` event is this task's final verdict: the in-onTask retry loop
+    // below already spent both of its attempts and the tool-call sequence was still wrong. NATS
+    // redelivers on any thrown error, and a redelivered attempt would otherwise re-run the whole
+    // LLM sequence (and re-append a duplicate `deploy_sequence_invalid` event) before landing on
+    // `failed` again regardless - confirmed empirically: left unguarded, this took 5 deliveries
+    // and ~16s, writing 5 duplicate events. Re-throwing here keeps the verdict and costs one
+    // query instead of a full Groq round-trip per redelivery.
+    const [priorFailure] = await this.db
+      .select()
+      .from(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), eq(taskEvents.eventType, 'deploy_sequence_invalid')));
+    if (priorFailure) {
+      throw new Error(`task ${taskId} already exhausted its deploy-sequence retry; not retrying`);
+    }
+
     // Idempotency guard, mirroring ArchitectAgent's and CoderAgent's: NATS redelivers this exact
     // task on any thrown error, up to maxDeliver attempts. A `deploy_recorded` event means the
     // deploy config was already written and the (dry-run) zcli sequence already logged, so
@@ -60,19 +75,29 @@ export class DeployerAgent extends ZeropsAgent {
     // slugify is idempotent, so this is a no-op on already-slugified names.
     const hostname = slugify(product.name);
 
+    const commands: string[] = [];
     const writeDeployConfigTool = {
       id: 'write_deploy_config',
       description: 'Write the zerops.yaml and service-import YAML for this product. hostname must be the product name.',
       inputSchema: z.object({ hostname: z.string() }),
       outputSchema: z.object({ written: z.boolean() }),
       execute: async ({ context }: { context: { hostname: string } }) => {
+        // Pushed into the same flat, ordered `commands` array run_zcli's execute pushes into
+        // below - validateDeploySequence needs to see this step's position relative to the two
+        // zcli calls, not just count them, since a sequence that skips this tool entirely (only
+        // calling the two run_zcli tools) would otherwise pass despite never having written the
+        // files those zcli commands depend on. This must happen BEFORE the `await`s below, not
+        // after: Mastra dispatches a round's tool calls concurrently, and run_zcli's execute
+        // pushes synchronously with no intervening `await` - if this push instead ran after the
+        // two writeFile calls below, run_zcli's (faster, synchronous) push would consistently
+        // land first regardless of call order, corrupting the very sequence being validated.
+        commands.push('write_deploy_config');
         await writeFile(path.join(productDir, 'zerops.yaml'), renderZeropsYaml(hostname), 'utf-8');
         await writeFile(path.join(productDir, 'zerops-service-import.yaml'), renderServiceImportYaml(hostname), 'utf-8');
         return { written: true };
       },
     };
 
-    const commands: string[] = [];
     const runZcliTool = {
       id: 'run_zcli',
       description: 'Run a zcli command against the real Zerops project. Defaults to dry-run (logs only).',

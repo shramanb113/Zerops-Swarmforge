@@ -40,6 +40,20 @@ export class CoderAgent extends ZeropsAgent {
     const { productId } = TaskPayload.parse(payload);
     const taskId = this.currentTaskId!;
 
+    // A `compile_failed` event is this task's final verdict: generateAndCompile already spent both
+    // of its attempts. NATS redelivers on any thrown error, and a redelivered attempt starts with an
+    // empty `writtenFiles` - which makes checkFrontendSyntax pass vacuously while `tsc` compiles the
+    // stale files the failed attempt left on disk, silently converting a correct failure into a
+    // spurious success. Re-throwing here keeps the verdict, and costs one query instead of a full
+    // Groq + `pnpm install`/`tsc` cycle per redelivery.
+    const [priorFailure] = await this.db
+      .select()
+      .from(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), eq(taskEvents.eventType, 'compile_failed')));
+    if (priorFailure) {
+      throw new Error(`task ${taskId} already exhausted both compile attempts; not regenerating`);
+    }
+
     // Idempotency guard, mirroring ArchitectAgent's: NATS redelivers this exact task on any
     // thrown error (e.g. a transient control-plane blip on the handoff POST below), up to
     // maxDeliver attempts. Without this check every redelivery re-runs the whole LLM
