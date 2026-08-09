@@ -107,7 +107,13 @@ export class CoderAgent extends ZeropsAgent {
         'wire it up with realistic inline sample data (const literals) rather than a live fetch() ' +
         'to the backend - it must render meaningfully opened on its own. Design it minimal and ' +
         'clean: generous whitespace, a clear visual hierarchy, restrained color use, no lorem ' +
-        'ipsum placeholder text.',
+        'ipsum placeholder text.\n' +
+        'The <script> in frontend.html runs directly in the browser with NO transpile step - it ' +
+        'is plain JavaScript, NOT TypeScript. Never write TypeScript-only syntax there: no `as ' +
+        'SomeType` casts, no `: type` annotations on variables/params/returns, no interfaces. A ' +
+        'single such statement throws a SyntaxError that silently kills every event listener in ' +
+        'the whole script block, not just that line - this has actually happened, so treat it as ' +
+        'a hard rule, not a style preference.',
       model: this.agentModel,
       // Keys must match the toolName a tool-call refers to - the map key is the tool's public
       // name from the model's perspective, not the local variable name it's assigned from.
