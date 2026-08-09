@@ -20,7 +20,7 @@
 # workspace package by copying its current on-disk contents, `dist/` included.
 
 zerops:
-  - setup: control-plane
+  - setup: controlplane
     build:
       base: ubuntu/nodejs@22
       buildCommands:
@@ -38,11 +38,11 @@ zerops:
         - port: 3000
           httpSupport: true
       envVariables:
-        DATABASE_URL: '${postgres_connectionString}'
-        NATS_URL: '${nats_connectionString}'
-        VALKEY_URL: '${valkey_connectionString}'
+        DATABASE_URL: "${postgres_connectionString}"
+        NATS_URL: "${nats_connectionString}"
+        VALKEY_URL: "${valkey_connectionString}"
 
-  - setup: agent-architect
+  - setup: agentarchitect
     build:
       base: ubuntu/nodejs@22
       buildCommands:
@@ -57,13 +57,11 @@ zerops:
       base: ubuntu/nodejs@22
       start: node out/agent-architect/dist/index.js
       envVariables:
-        DATABASE_URL: '${postgres_connectionString}'
-        NATS_URL: '${nats_connectionString}'
-        VALKEY_URL: '${valkey_connectionString}'
-      envSecrets:
-        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
+        DATABASE_URL: "${postgres_connectionString}"
+        NATS_URL: "${nats_connectionString}"
+        VALKEY_URL: "${valkey_connectionString}"
 
-  - setup: agent-coder
+  - setup: agentcoder
     build:
       base: ubuntu/nodejs@22
       buildCommands:
@@ -78,13 +76,11 @@ zerops:
       base: ubuntu/nodejs@22
       start: node out/agent-coder/dist/index.js
       envVariables:
-        DATABASE_URL: '${postgres_connectionString}'
-        NATS_URL: '${nats_connectionString}'
-        VALKEY_URL: '${valkey_connectionString}'
-      envSecrets:
-        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
+        DATABASE_URL: "${postgres_connectionString}"
+        NATS_URL: "${nats_connectionString}"
+        VALKEY_URL: "${valkey_connectionString}"
 
-  - setup: agent-deployer
+  - setup: agentdeployer
     build:
       base: ubuntu/nodejs@22
       buildCommands:
@@ -99,9 +95,7 @@ zerops:
       base: ubuntu/nodejs@22
       start: node out/agent-deployer/dist/index.js
       envVariables:
-        DATABASE_URL: '${postgres_connectionString}'
-        NATS_URL: '${nats_connectionString}'
-        VALKEY_URL: '${valkey_connectionString}'
-        DEPLOY_DRY_RUN: 'true'
-      envSecrets:
-        GROQ_API_KEY: '<set in Zerops GUI before first real deploy - never commit the real key>'
+        DATABASE_URL: "${postgres_connectionString}"
+        NATS_URL: "${nats_connectionString}"
+        VALKEY_URL: "${valkey_connectionString}"
+        DEPLOY_DRY_RUN: "false"

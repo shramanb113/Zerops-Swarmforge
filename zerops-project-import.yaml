@@ -15,15 +15,15 @@ services:
     type: nats:single@2.12
     mode: NON_HA
 
-  - hostname: control-plane
+  - hostname: controlplane
     type: ubuntu/nodejs@22
     enableSubdomainAccess: true
 
-  - hostname: agent-architect
+  - hostname: agentarchitect
     type: ubuntu/nodejs@22
 
-  - hostname: agent-coder
+  - hostname: agentcoder
     type: ubuntu/nodejs@22
 
-  - hostname: agent-deployer
+  - hostname: agentdeployer
     type: ubuntu/nodejs@22

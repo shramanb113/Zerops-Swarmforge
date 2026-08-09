@@ -11,6 +11,15 @@ live on a topology dashboard.
 
 Built in 48 hours for a Zerops hackathon.
 
+## Live demo
+
+- **Dashboard:** https://web-coral-omega-21.vercel.app
+- **Control plane API:** https://controlplane-2dcf-3000.prg1.zerops.app
+
+The swarm (control plane + Architect + Coder + Deployer) runs on Zerops; the dashboard
+runs on Vercel. `DEPLOY_DRY_RUN` is `false` in this deployment, so submitting a product
+description on the live dashboard results in a real new Zerops service.
+
 ## Why this needs Zerops, specifically
 
 The pitch only works because every part of it is a **first-class Zerops service** on
